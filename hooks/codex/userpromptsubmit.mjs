@@ -8,12 +8,16 @@ import "../ensure-deps.mjs";
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
+import { createDocsScoutingGuidance } from "../routing-block.mjs";
+import { createToolNamer } from "../core/tool-naming.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
+const toolNamer = createToolNamer("codex");
+let additionalContext = "";
 
 try {
   const raw = await readStdin();
@@ -29,6 +33,11 @@ try {
     || trimmed.startsWith("<tool-result>");
 
   if (trimmed.length > 0 && !isSystemMessage) {
+    if (/\b(docs?|documentazione|catalog|cataloghi|routing documentale|scouting|mappa|map|audit|ricerca|search|riferimenti|references|MCP|tooling)\b/i.test(trimmed)
+      && /\b(approfondit|deep|molti|tanti|workspace|repo|codebase|LF|Licensing Framework|generated|indice|index|semantic|retrieval)\b/i.test(trimmed)) {
+      additionalContext = createDocsScoutingGuidance(toolNamer);
+    }
+
     const { SessionDB } = await loadSessionDB();
     const { extractUserEvents } = await loadExtract();
     const { resolveProjectAttributions } = await loadProjectAttribution();
@@ -71,5 +80,5 @@ try {
 }
 
 process.stdout.write(JSON.stringify({
-  hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "" },
+  hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext },
 }) + "\n");
