@@ -93,6 +93,24 @@ export const formatters = {
     }),
   },
 
+  "copilot-cli": {
+    deny: (reason) => ({
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    }),
+    ask: () => ({
+      permissionDecision: "ask",
+    }),
+    modify: (updatedInput) => ({
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        typeof updatedInput?.command === "string"
+          ? updatedInput.command.replace(/^echo\s+["']?/, "").replace(/["']?$/, "")
+          : "Use context-mode MCP tools for this noisy operation.",
+    }),
+    context: () => null, // Prompt/session context injection is handled by skills.
+  },
+
   "codex": {
     deny: (reason) => ({
       hookSpecificOutput: {

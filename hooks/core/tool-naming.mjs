@@ -21,6 +21,7 @@ const TOOL_PREFIXES = {
   "kilo":           (tool) => `context-mode_${tool}`,
   "vscode-copilot": (tool) => `context-mode_${tool}`,
   "jetbrains-copilot": (tool) => `context-mode_${tool}`,
+  "copilot-cli":    (tool) => `context-mode_${tool}`,
   "kiro":           (tool) => `@context-mode/${tool}`,
   "zed":            (tool) => `mcp:context-mode:${tool}`,
   "cursor":         (tool) => tool,

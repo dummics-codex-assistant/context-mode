@@ -81,6 +81,13 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     precompact: "hooks/vscode-copilot/precompact.mjs",
     sessionstart: "hooks/vscode-copilot/sessionstart.mjs",
   },
+  "copilot-cli": {
+    pretooluse: "hooks/copilot-cli/pretooluse.mjs",
+    posttooluse: "hooks/copilot-cli/posttooluse.mjs",
+    sessionstart: "hooks/copilot-cli/sessionstart.mjs",
+    userpromptsubmitted: "hooks/copilot-cli/userpromptsubmitted.mjs",
+    sessionend: "hooks/copilot-cli/sessionend.mjs",
+  },
   "cursor": {
     pretooluse: "hooks/cursor/pretooluse.mjs",
     posttooluse: "hooks/cursor/posttooluse.mjs",

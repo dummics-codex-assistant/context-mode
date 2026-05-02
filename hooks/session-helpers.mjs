@@ -164,6 +164,14 @@ export const CODEX_OPTS = {
   sessionIdEnv: undefined,    // Uses session_id from hook stdin or ppid fallback
 };
 
+/** GitHub Copilot CLI platform options. */
+export const COPILOT_CLI_OPTS = {
+  configDir: ".copilot",
+  configDirEnv: "COPILOT_HOME",
+  projectDirEnv: undefined,   // Copilot CLI passes cwd in hook stdin
+  sessionIdEnv: undefined,    // Uses sessionId/session_id if present or ppid fallback
+};
+
 /** Kiro CLI platform options. */
 export const KIRO_OPTS = {
   configDir: ".kiro",
@@ -303,4 +311,3 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
 export function getCleanupFlagPath(opts = CLAUDE_OPTS, projectDirOverride) {
   return _resolveProjectFile(opts, projectDirOverride, ".cleanup");
 }
-

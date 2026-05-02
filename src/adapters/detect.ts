@@ -16,6 +16,7 @@
  *                     ~/.config/opencode/
  *   - OpenClaw:       OPENCLAW_HOME, OPENCLAW_CLI | ~/.openclaw/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
+ *   - Copilot CLI:    COPILOT_HOME, COPILOT_MODEL | ~/.copilot/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
  *   - VS Code Copilot: VSCODE_PID, VSCODE_CWD | ~/.vscode/
  *   - JetBrains Copilot: IDEA_INITIAL_DIRECTORY, IDEA_HOME, JETBRAINS_CLIENT_ID | ~/.config/JetBrains/
@@ -195,6 +196,12 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
     { name: "CODEX_THREAD_ID", role: "identification" },
     { name: "CODEX_CI",        role: "identification" },
   ]],
+  // copilot-cli — custom fork adapter. Keep it before VS Code Copilot so the
+  // standalone CLI is not misclassified as its host/editor integration.
+  ["copilot-cli", [
+    { name: "COPILOT_HOME",  role: "workspace" },
+    { name: "COPILOT_MODEL", role: "identification" },
+  ]],
   // gemini-cli — GEMINI_PROJECT_DIR per google-gemini/gemini-cli
   // docs/hooks/index.md; GEMINI_CLI is the MCP-server sentinel.
   ["gemini-cli", [
@@ -339,6 +346,7 @@ export function getSessionDirSegments(platform: string): string[] | null {
     case "antigravity":      return [".gemini"];
     case "openclaw":         return [".openclaw"];
     case "codex":            return [".codex"];
+    case "copilot-cli":      return [".copilot"];
     case "cursor":           return [".cursor"];
     case "vscode-copilot":   return [".vscode"];
     case "kiro":             return [".kiro"];
@@ -385,7 +393,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
+      "copilot-cli", "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -462,6 +470,15 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   // hosts the terminal. Reorder: agents (.kiro/.omp/.pi/.qwen/.openclaw)
   // win the medium-confidence tier, editors (~/.cursor/, ~/.vscode/,
   // JetBrains) lose. Verified by the detect-config-dir.test.ts matrix.
+
+  if (existsSync(resolve(home, ".copilot"))) {
+    return {
+      platform: "copilot-cli",
+      confidence: "medium",
+      reason: "~/.copilot/ directory exists",
+    };
+  }
+
   if (existsSync(resolve(home, ".kiro"))) {
     return {
       platform: "kiro",
@@ -585,6 +602,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "codex": {
       const { CodexAdapter } = await import("./codex/index.js");
       return new CodexAdapter();
+    }
+
+    case "copilot-cli": {
+      const { CopilotCLIAdapter } = await import("./copilot-cli/index.js");
+      return new CopilotCLIAdapter();
     }
 
     case "vscode-copilot": {
