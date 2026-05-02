@@ -20,6 +20,8 @@ export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "PyCharm": "jetbrains-copilot",
   "Codex": "codex",
   "codex-mcp-client": "codex",
+  "GitHub Copilot CLI": "copilot-cli",
+  "copilot-cli": "copilot-cli",
   "Kilo Code": "kilo",
   "Kiro CLI": "kiro",
   "Pi CLI": "pi",

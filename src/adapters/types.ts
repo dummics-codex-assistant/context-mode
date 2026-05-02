@@ -304,6 +304,7 @@ export type PlatformId =
   | "kilo"
   | "openclaw"
   | "codex"
+  | "copilot-cli"
   | "vscode-copilot"
   | "jetbrains-copilot"
   | "cursor"

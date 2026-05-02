@@ -55,6 +55,13 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     precompact: "hooks/vscode-copilot/precompact.mjs",
     sessionstart: "hooks/vscode-copilot/sessionstart.mjs",
   },
+  "copilot-cli": {
+    pretooluse: "hooks/copilot-cli/pretooluse.mjs",
+    posttooluse: "hooks/copilot-cli/posttooluse.mjs",
+    sessionstart: "hooks/copilot-cli/sessionstart.mjs",
+    userpromptsubmitted: "hooks/copilot-cli/userpromptsubmitted.mjs",
+    sessionend: "hooks/copilot-cli/sessionend.mjs",
+  },
   "cursor": {
     pretooluse: "hooks/cursor/pretooluse.mjs",
     posttooluse: "hooks/cursor/posttooluse.mjs",
@@ -329,6 +336,12 @@ async function doctor(): Promise<number> {
   for (const result of hookResults) {
     if (result.status === "pass") {
       p.log.success(color.green(`${result.check}: PASS`) + ` — ${result.message}`);
+    } else if (result.status === "warn") {
+      p.log.warn(
+        color.yellow(`${result.check}: WARN`) +
+          ` — ${result.message}` +
+          (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
+      );
     } else {
       p.log.error(
         color.red(`${result.check}: FAIL`) +

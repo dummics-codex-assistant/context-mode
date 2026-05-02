@@ -13,6 +13,7 @@
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
  *   - OpenClaw:       OPENCLAW_HOME, OPENCLAW_CLI | ~/.openclaw/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
+ *   - Copilot CLI:    COPILOT_HOME, COPILOT_MODEL | ~/.copilot/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
  *   - VS Code Copilot: VSCODE_PID, VSCODE_CWD | ~/.vscode/
  *   - JetBrains Copilot: IDEA_INITIAL_DIRECTORY, IDEA_HOME, JETBRAINS_CLIENT_ID | ~/.config/JetBrains/
@@ -37,6 +38,7 @@ export const PLATFORM_ENV_VARS = [
   ["kilo", ["KILO", "KILO_PID"]],
   ["opencode", ["OPENCODE", "OPENCODE_PID"]],
   ["codex", ["CODEX_CI", "CODEX_THREAD_ID"]],
+  ["copilot-cli", ["COPILOT_HOME", "COPILOT_MODEL"]],
   ["cursor", ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
   ["vscode-copilot", ["VSCODE_PID", "VSCODE_CWD"]],
   ["jetbrains-copilot", ["IDEA_INITIAL_DIRECTORY", "IDEA_HOME", "JETBRAINS_CLIENT_ID"]],
@@ -75,7 +77,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
+      "copilot-cli", "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -123,6 +125,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "codex",
       confidence: "medium",
       reason: "~/.codex/ directory exists",
+    };
+  }
+
+  if (existsSync(resolve(home, ".copilot"))) {
+    return {
+      platform: "copilot-cli",
+      confidence: "medium",
+      reason: "~/.copilot/ directory exists",
     };
   }
 
@@ -239,6 +249,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "codex": {
       const { CodexAdapter } = await import("./codex/index.js");
       return new CodexAdapter();
+    }
+
+    case "copilot-cli": {
+      const { CopilotCLIAdapter } = await import("./copilot-cli/index.js");
+      return new CopilotCLIAdapter();
     }
 
     case "vscode-copilot": {
