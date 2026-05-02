@@ -13,6 +13,7 @@ Non sostituisce le istruzioni globali dell'owner, le skill del progetto, `AGENTS
 - log lunghi, transcript, JSONL, sessioni, output CI/test voluminoso
 - `rg`, `git`, scansioni o inventari con molti risultati
 - confronto tra molti file o directory
+- scouting approfondito di docs, cataloghi, routing documentale o riferimenti MCP/tooling
 - analisi di dati strutturati, conteggi, filtri, deduplica, clustering
 - pagine web o documenti grandi da indicizzare e interrogare
 - ripresa sessione quando serve cercare decisioni o vincoli gia' indicizzati
@@ -34,6 +35,8 @@ Non sostituisce le istruzioni globali dell'owner, le skill del progetto, `AGENTS
 5. `ctx_fetch_and_index(url, source)`: pagine/documenti web grandi; poi interrogare con `ctx_search`.
 
 Per creare o modificare file usa gli strumenti nativi di Codex. Non usare context-mode come writer di file.
+
+Per scouting docs/repo ampio: usa prima `ctx_batch_execute` con `rg` mirati, letture di indici/cataloghi e query di follow-up; poi passa a letture normali solo sui file shortlist.
 
 ## Hook e sicurezza del contesto
 

@@ -37,6 +37,7 @@ export function createRoutingBlock(t, options = {}) {
   <usage_guidance>
     - Per comandi brevi e mirati puoi usare gli strumenti normali.
     - Per output atteso sopra circa 20 righe, usa ${t("ctx_batch_execute")} o filtra con ${t("ctx_execute")}.
+    - Per scouting docs/repo ampio, cataloghi, mapping di riferimenti o audit con molte ricerche, parti con ${t("ctx_batch_execute")}: raccogli file indice, rg mirati e poche letture chiave in un solo giro, poi usa ${t("ctx_search")} per follow-up.
     - Per leggere pochi file prima di editarli, lettura normale va bene.
     - Per analizzare file grandi, usa ${t("ctx_execute_file")}.
     - Per web/documenti lunghi, usa ${t("ctx_fetch_and_index")} e poi ${t("ctx_search")}.
@@ -97,6 +98,10 @@ export function createBashGuidance(t) {
   return `<context_guidance>\\n  <tip>context-mode: output shell lungo consuma contesto. Usa ${t("ctx_batch_execute")} per discovery multi-step o ${t("ctx_execute")}(language: "shell", code: "...") per filtrare e stampare solo sintesi.\\n  </tip>\\n</context_guidance>`;
 }
 
+export function createDocsScoutingGuidance(t) {
+  return `<context_guidance>\\n  <tip>context-mode: task di scouting docs/repo rilevato. Se devi cercare in molti file, usa prima ${t("ctx_batch_execute")}(commands, queries) con comandi bounded e label descrittive; poi ${t("ctx_search")}(queries) per follow-up. Usa letture normali solo dopo aver ridotto la shortlist.\\n  </tip>\\n</context_guidance>`;
+}
+
 // ── Backward compat: static exports defaulting to Codex ──
 
 const _t = createToolNamer("codex");
@@ -104,3 +109,4 @@ export const ROUTING_BLOCK = createRoutingBlock(_t);
 export const READ_GUIDANCE = createReadGuidance(_t);
 export const GREP_GUIDANCE = createGrepGuidance(_t);
 export const BASH_GUIDANCE = createBashGuidance(_t);
+export const DOCS_SCOUTING_GUIDANCE = createDocsScoutingGuidance(_t);
