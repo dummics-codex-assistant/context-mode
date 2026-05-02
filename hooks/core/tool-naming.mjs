@@ -5,7 +5,6 @@
  * Evidence-based naming conventions (from official docs):
  * | Platform           | Pattern                                                    |
  * |--------------------|------------------------------------------------------------|
- * | Claude Code        | mcp__plugin_context-mode_context-mode__<tool>               |
  * | Gemini CLI         | mcp__context-mode__<tool>                                  |
  * | Antigravity        | mcp__context-mode__<tool>                                  |
  * | OpenCode           | context-mode_<tool>                                        |
@@ -16,7 +15,6 @@
  */
 
 const TOOL_PREFIXES = {
-  "claude-code":    (tool) => `mcp__plugin_context-mode_context-mode__${tool}`,
   "gemini-cli":     (tool) => `mcp__context-mode__${tool}`,
   "antigravity":    (tool) => `mcp__context-mode__${tool}`,
   "opencode":       (tool) => `context-mode_${tool}`,
@@ -34,10 +32,10 @@ const TOOL_PREFIXES = {
 
 /**
  * Get the platform-specific MCP tool name for a bare tool name.
- * Falls back to claude-code convention if platform is unknown.
+ * Falls back to Codex convention if platform is unknown.
  */
 export function getToolName(platform, bareTool) {
-  const fn = TOOL_PREFIXES[platform] || TOOL_PREFIXES["claude-code"];
+  const fn = TOOL_PREFIXES[platform] || TOOL_PREFIXES["codex"];
   return fn(bareTool);
 }
 

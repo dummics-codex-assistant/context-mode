@@ -62,8 +62,8 @@ describe("Routing: Subagents (Agent only — Task removed per #241)", () => {
     const decision = routePreToolUse("Agent", { prompt: "test" }, "/test");
     const prompt = decision.updatedInput.prompt;
     expect(prompt).toContain("label");
-    expect(prompt).toContain("descriptive");
-    expect(prompt).toContain("FTS5 chunk title");
+    expect(prompt).toContain("descrittive");
+    expect(prompt).toContain("titoli FTS5");
   });
 
   it("Task tool is NOT routed — returns null (passthrough) (#241)", () => {

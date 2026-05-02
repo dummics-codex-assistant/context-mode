@@ -89,7 +89,7 @@ describe("routePreToolUse", () => {
       expect(result!.action).toBe("modify");
       expect(result!.updatedInput).toBeDefined();
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget blocked",
+        "curl/wget bloccato",
       );
     });
 
@@ -115,7 +115,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget blocked",
+        "curl/wget bloccato",
       );
     });
 
@@ -195,7 +195,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Inline HTTP blocked",
+        "HTTP inline bloccato",
       );
     });
 
@@ -206,7 +206,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Inline HTTP blocked",
+        "HTTP inline bloccato",
       );
     });
 
@@ -238,7 +238,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Build tool redirected",
+        "build tool reindirizzato",
       );
     });
 
@@ -346,7 +346,7 @@ describe("routePreToolUse", () => {
       });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch blocked");
+      expect(result!.reason).toContain("WebFetch bloccato");
       expect(result!.reason).toContain("fetch_and_index");
     });
 
@@ -362,7 +362,7 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_web_fetch", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch blocked");
+      expect(result!.reason).toContain("WebFetch bloccato");
       expect(result!.reason).toContain("fetch_and_index");
       expect(result!.reason).toContain("ctx_search");
     });
@@ -372,7 +372,7 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_fetch_tool", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch blocked");
+      expect(result!.reason).toContain("WebFetch bloccato");
       expect(result!.reason).toContain("fetch_and_index");
       expect(result!.reason).toContain("ctx_search");
     });
@@ -603,24 +603,19 @@ describe("routePreToolUse", () => {
   describe("routing block content", () => {
     it("contains file_writing_policy forbidding ctx_execute for file writes", () => {
       expect(ROUTING_BLOCK).toContain("<file_writing_policy>");
-      expect(ROUTING_BLOCK).toContain("NEVER use");
+      expect(ROUTING_BLOCK).toContain("strumenti nativi di Codex");
       expect(ROUTING_BLOCK).toContain("ctx_execute");
-      expect(ROUTING_BLOCK).toContain("native Write/Edit tools");
+      expect(ROUTING_BLOCK).toContain("writer primario");
     });
 
     it("forbidden_actions blocks ctx_execute for file creation", () => {
       expect(ROUTING_BLOCK).toContain(
-        "NO",
-      );
-      expect(ROUTING_BLOCK).toContain(
-        "for file creation/modification",
+        "Non ripetere un comando bloccato",
       );
     });
 
     it("artifact_policy specifies native Write tool", () => {
-      expect(ROUTING_BLOCK).toContain(
-        "Write artifacts (code, configs, PRDs) to FILES. NEVER inline.",
-      );
+      expect(ROUTING_BLOCK).toContain("Se produci artifact lunghi");
     });
   });
 
