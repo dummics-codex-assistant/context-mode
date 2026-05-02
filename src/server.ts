@@ -37,7 +37,10 @@ const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
     const p = resolve(__pkg_dir, rel);
     if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, "utf8")).version; } catch {}
+      try {
+        const version = JSON.parse(readFileSync(p, "utf8")).version;
+        if (typeof version === "string" && version.length > 0) return version;
+      } catch {}
     }
   }
   return "unknown";
