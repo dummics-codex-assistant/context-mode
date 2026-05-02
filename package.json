@@ -2,14 +2,12 @@
   "name": "context-mode",
   "version": "1.0.103",
   "type": "module",
-  "description": "MCP plugin that saves 98% of your context window. Works with Claude Code, Gemini CLI, VS Code Copilot, OpenCode, and Codex CLI. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
+  "description": "Fork Codex-centric del plugin MCP context-mode: protegge la finestra di contesto con hook leggeri, esecuzione sandbox, knowledge base FTS5 e ricerca mirata.",
   "author": "Mert Koseoğlu",
   "license": "Elastic-2.0",
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "claude",
-    "claude-code",
     "gemini-cli",
     "vscode-copilot",
     "opencode",
@@ -24,9 +22,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/mksglu/context-mode"
+    "url": "https://github.com/dummics-codex-assistant/context-mode"
   },
-  "homepage": "https://github.com/mksglu/context-mode#readme",
+  "homepage": "https://github.com/dummics-codex-assistant/context-mode#readme",
   "pi": {
     "extensions": [
       "./build/pi-extension.js"
@@ -40,7 +38,7 @@
       "./build/openclaw-plugin.js"
     ]
   },
-  "bugs": "https://github.com/mksglu/context-mode/issues",
+  "bugs": "https://github.com/dummics-codex-assistant/context-mode/issues",
   "main": "./build/opencode-plugin.js",
   "exports": {
     ".": "./build/opencode-plugin.js",
@@ -66,7 +64,6 @@
     "server.bundle.mjs",
     "cli.bundle.mjs",
     "skills",
-    ".claude-plugin",
     ".openclaw-plugin",
     ".mcp.json",
     "openclaw.plugin.json",
@@ -79,7 +76,7 @@
     "build": "tsc && node -e \"if(process.platform!=='win32'){require('fs').chmodSync('build/cli.js',0o755)}\" && npm run bundle",
     "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify && esbuild src/cli.ts --bundle --platform=node --target=node18 --format=esm --outfile=cli.bundle.mjs --external:better-sqlite3 --minify && esbuild src/session/extract.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-extract.bundle.mjs --minify && esbuild src/session/snapshot.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-snapshot.bundle.mjs --minify && esbuild src/session/db.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-db.bundle.mjs --external:better-sqlite3 --minify",
     "version-sync": "node scripts/version-sync.mjs",
-    "version": "node scripts/version-sync.mjs && git add .claude-plugin/plugin.json .claude-plugin/marketplace.json .openclaw-plugin/openclaw.plugin.json .openclaw-plugin/package.json openclaw.plugin.json .pi/extensions/context-mode/package.json",
+    "version": "node scripts/version-sync.mjs && git add .openclaw-plugin/openclaw.plugin.json .openclaw-plugin/package.json openclaw.plugin.json .pi/extensions/context-mode/package.json",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",

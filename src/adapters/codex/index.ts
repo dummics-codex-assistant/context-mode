@@ -5,7 +5,7 @@
  *
  * Codex CLI hook specifics:
  *   - 5 hook events: PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop
- *   - Same wire protocol as Claude Code (JSON stdin → stdout)
+ *   - JSON stdin -> stdout wire protocol
  *   - Config: ~/.codex/hooks.json + ~/.codex/config.toml (TOML for MCP/features)
  *   - Session dir: ~/.codex/context-mode/sessions/
  *
@@ -144,7 +144,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   // ── Response formatting ────────────────────────────────
   // Codex CLI uses hookSpecificOutput wrapper for all hook responses.
-  // Unlike Claude Code, Codex does NOT support updatedInput or updatedMCPToolOutput.
+  // Codex does not support updatedInput or updatedMCPToolOutput here.
 
   formatPreToolUseResponse(response: PreToolUseResponse): unknown {
     if (response.decision === "deny") {

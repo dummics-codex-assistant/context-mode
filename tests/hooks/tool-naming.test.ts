@@ -66,9 +66,9 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe("getToolName", () => {
-  it("returns correct name for claude-code", () => {
-    expect(getToolName("claude-code", "ctx_fetch_and_index")).toBe(
-      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
+  it("returns bare names for Codex by default", () => {
+    expect(getToolName("codex", "ctx_fetch_and_index")).toBe(
+      "ctx_fetch_and_index",
     );
   });
 
@@ -126,9 +126,9 @@ describe("getToolName", () => {
     expect(getToolName("pi", "ctx_batch_execute")).toBe("ctx_batch_execute");
   });
 
-  it("falls back to claude-code for unknown platforms", () => {
+  it("falls back to Codex for unknown platforms", () => {
     expect(getToolName("unknown-platform", "ctx_search")).toBe(
-      "mcp__plugin_context-mode_context-mode__ctx_search",
+      "ctx_search",
     );
   });
 });
@@ -143,7 +143,6 @@ describe("createToolNamer", () => {
 
 describe("KNOWN_PLATFORMS", () => {
   it("contains all platforms", () => {
-    expect(KNOWN_PLATFORMS).toContain("claude-code");
     expect(KNOWN_PLATFORMS).toContain("gemini-cli");
     expect(KNOWN_PLATFORMS).toContain("antigravity");
     expect(KNOWN_PLATFORMS).toContain("opencode");
@@ -157,7 +156,7 @@ describe("KNOWN_PLATFORMS", () => {
     expect(KNOWN_PLATFORMS).toContain("openclaw");
     expect(KNOWN_PLATFORMS).toContain("pi");
     expect(KNOWN_PLATFORMS).toContain("qwen-code");
-    expect(KNOWN_PLATFORMS.length).toBeGreaterThanOrEqual(14);
+    expect(KNOWN_PLATFORMS.length).toBeGreaterThanOrEqual(13);
   });
 });
 
@@ -173,7 +172,6 @@ describe("createRoutingBlock", () => {
     expect(block).toContain("mcp__context-mode__ctx_search");
     expect(block).toContain("mcp__context-mode__ctx_execute");
     expect(block).toContain("mcp__context-mode__ctx_fetch_and_index");
-    // Must NOT contain claude-code prefix
     expect(block).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
@@ -215,32 +213,26 @@ describe("createBashGuidance", () => {
 // Backward Compat — Static Exports
 // ═══════════════════════════════════════════════════════════════════
 
-describe("backward compat static exports", () => {
-  it("ROUTING_BLOCK uses claude-code naming", () => {
-    expect(ROUTING_BLOCK).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-    );
-    expect(ROUTING_BLOCK).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_search",
-    );
+describe("static exports", () => {
+  it("ROUTING_BLOCK uses Codex bare naming", () => {
+    expect(ROUTING_BLOCK).toContain("ctx_batch_execute");
+    expect(ROUTING_BLOCK).toContain("ctx_search");
+    expect(ROUTING_BLOCK).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("READ_GUIDANCE uses claude-code naming", () => {
-    expect(READ_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_execute_file",
-    );
+  it("READ_GUIDANCE uses Codex bare naming", () => {
+    expect(READ_GUIDANCE).toContain("ctx_execute_file");
+    expect(READ_GUIDANCE).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("GREP_GUIDANCE uses claude-code naming", () => {
-    expect(GREP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_execute",
-    );
+  it("GREP_GUIDANCE uses Codex bare naming", () => {
+    expect(GREP_GUIDANCE).toContain("ctx_execute");
+    expect(GREP_GUIDANCE).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("BASH_GUIDANCE uses claude-code naming", () => {
-    expect(BASH_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-    );
+  it("BASH_GUIDANCE uses Codex bare naming", () => {
+    expect(BASH_GUIDANCE).toContain("ctx_batch_execute");
+    expect(BASH_GUIDANCE).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 });
 
@@ -259,11 +251,12 @@ describe("routePreToolUse with platform parameter", () => {
     expect(cmd).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("curl block message uses claude-code tool names when platform is omitted", () => {
+  it("curl block message uses Codex bare tool names when platform is omitted", () => {
     const result = routePreToolUse("Bash", { command: "curl https://example.com" }, "/tmp");
     expect(result).not.toBeNull();
     const cmd = (result!.updatedInput as Record<string, string>).command;
-    expect(cmd).toContain("mcp__plugin_context-mode_context-mode__ctx_fetch_and_index");
+    expect(cmd).toContain("ctx_fetch_and_index");
+    expect(cmd).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
   it("inline HTTP block uses cursor bare names when platform=cursor", () => {
@@ -273,7 +266,7 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result).not.toBeNull();
     const cmd = (result!.updatedInput as Record<string, string>).command;
     expect(cmd).toContain("ctx_execute");
-    expect(cmd).toContain("Think in Code");
+    expect(cmd).toContain("HTTP inline bloccato");
     expect(cmd).not.toContain("mcp__");
   });
 

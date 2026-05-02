@@ -35,7 +35,7 @@ import { resolve } from "node:path";
 // Hybrid approach:
 //   - In-memory Set for same-process (OpenCode ts-plugin, vitest)
 //   - File-based markers with O_EXCL for cross-process atomicity
-//     (Claude Code, Gemini, Cursor, VS Code Copilot)
+//     (Codex, Gemini, Cursor, VS Code Copilot)
 //
 // Session identity is resolved in this order:
 //   1. sessionId passed in by the caller (stable across hook invocations)
@@ -124,7 +124,7 @@ export async function initSecurity(buildDir) {
 }
 
 /**
- * Normalize platform-specific tool names to canonical (Claude Code) names.
+ * Normalize platform-specific tool names to canonical routing names.
  *
  * Evidence:
  * - Gemini CLI: https://github.com/google-gemini/gemini-cli (run_shell_command, read_file, grep_search, web_fetch, activate_skill)
@@ -171,14 +171,14 @@ const TOOL_ALIASES = {
  * @param {string} toolName - The tool name as reported by the platform
  * @param {object} toolInput - The tool input/parameters
  * @param {string} [projectDir] - Project directory for security policy lookup
- * @param {string} [platform="claude-code"] - Platform ID for tool name formatting
+ * @param {string} [platform="codex"] - Platform ID for tool name formatting
  * @param {string} [sessionId] - Stable session identifier from hook payload. When
  *   provided, the guidance throttle uses it to scope marker files across hook
  *   invocations even when process.ppid shifts (Windows/Git Bash — see #298).
  */
 export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId) {
-  // Build platform-specific tool namer (defaults to claude-code for backward compat)
-  const t = createToolNamer(platform || "claude-code");
+  // Build platform-specific tool namer. This fork defaults to Codex.
+  const t = createToolNamer(platform || "codex");
 
   // Build platform-specific guidance/routing content
   const routingBlock = platform ? createRoutingBlock(t) : ROUTING_BLOCK;
@@ -257,7 +257,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         return mcpRedirect({
           action: "modify",
           updatedInput: {
-            command: `echo "context-mode: curl/wget blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and prints only the answer. Or use ${t("ctx_fetch_and_index")}(url, source) to fetch and index. Write pure JS with try/catch, no npm deps. Do NOT retry with curl/wget."`,
+            command: `echo "context-mode: curl/wget bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo la risposta utile. Oppure usa ${t("ctx_fetch_and_index")}(url, source) per indicizzare e poi cercare. JavaScript puro, try/catch, niente npm deps. Non riprovare con curl/wget."`,
           },
         });
       }
@@ -279,7 +279,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       return mcpRedirect({
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Inline HTTP blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and console.log() only the result. Write robust pure JS with try/catch, no npm deps. Do NOT retry with Bash."`,
+          command: `echo "context-mode: HTTP inline bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo il risultato utile. JavaScript puro con try/catch, niente npm deps. Non riprovare via shell."`,
         },
       });
     }
@@ -291,7 +291,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       return mcpRedirect({
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Build tool redirected. Think in Code — use ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run and print only errors/summary. Do NOT retry with Bash."`,
+          command: `echo "context-mode: build tool reindirizzato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") per stampare solo errori o sintesi. Non riprovare via shell grezza."`,
         },
       });
     }
@@ -315,7 +315,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     const url = toolInput.url ?? "";
     return mcpRedirect({
       action: "deny",
-      reason: `context-mode: WebFetch blocked. Think in Code — use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch and index, then ${t("ctx_search")}(queries: [...]) to query. Or use ${t("ctx_execute")}(language, code) to fetch, process, and console.log() only what you need. Write pure JS, no npm deps. Do NOT use curl, wget, or WebFetch.`,
+      reason: `context-mode: WebFetch bloccato. Usa ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") per indicizzare, poi ${t("ctx_search")}(queries: [...]) per cercare. In alternativa usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo cio' che serve. JavaScript puro, niente npm deps. Non usare curl, wget o WebFetch.`,
     });
   }
 

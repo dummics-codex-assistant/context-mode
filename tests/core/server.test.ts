@@ -822,14 +822,14 @@ describe("Hook Injection", () => {
     const parsed = JSON.parse(output);
     const prompt = parsed.hookSpecificOutput.updatedInput.prompt;
     assert.ok(prompt.includes("<output_constraints>"), "Should inject output_constraints");
-    assert.ok(prompt.includes("Terse like caveman"), "Should mention concise communication style");
+    assert.ok(prompt.includes("stile telegrafico"), "Should mention communication style");
     assert.ok(
       prompt.includes("<tool_selection_hierarchy>"),
       "Should inject tool_selection_hierarchy",
     );
     assert.ok(
-      prompt.includes("<forbidden_actions>"),
-      "Should inject forbidden_actions",
+      prompt.includes("<usage_guidance>"),
+      "Should inject usage_guidance",
     );
   });
 

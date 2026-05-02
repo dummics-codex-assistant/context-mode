@@ -3,9 +3,9 @@
  *
  * Codex CLI hooks are stable (codex_hooks Stage::Stable, default_enabled: true).
  * 5 hook events: PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop.
- * Same JSON stdin/stdout wire protocol as Claude Code.
+ * JSON stdin/stdout wire protocol.
  *
- * Config: ~/.codex/hooks.json (JSON format, same schema as Claude Code)
+ * Config: ~/.codex/hooks.json (JSON format)
  * MCP: full support via [mcp_servers] in ~/.codex/config.toml
  *
  * Known limitations:
@@ -18,7 +18,7 @@
 // Hook type constants
 // ─────────────────────────────────────────────────────────
 
-/** Codex CLI hook types — mirrors Claude Code's 5-event model. */
+/** Codex CLI hook types. */
 export const HOOK_TYPES = {
   PRE_TOOL_USE: "PreToolUse",
   POST_TOOL_USE: "PostToolUse",

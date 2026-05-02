@@ -76,8 +76,8 @@ describe("SessionStart Hook", () => {
       "Expected <tool_selection_hierarchy> tag",
     );
     assert.ok(
-      ctx.includes("<forbidden_actions>"),
-      "Expected <forbidden_actions> tag",
+      ctx.includes("<usage_guidance>"),
+      "Expected <usage_guidance> tag",
     );
     assert.ok(
       ctx.includes("<output_constraints>"),
@@ -102,9 +102,9 @@ describe("SessionStart Hook", () => {
     const result = runHook({});
     const parsed = JSON.parse(result.stdout);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes("Terse like caveman"), "Expected communication style directive");
+    assert.ok(ctx.includes("stile telegrafico"), "Expected communication style directive");
     assert.ok(
-      ctx.includes("Write artifacts"),
+      ctx.includes("artifact lunghi"),
       "Expected artifact policy",
     );
   });

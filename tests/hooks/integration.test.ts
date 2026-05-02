@@ -156,7 +156,7 @@ describe("Bash: Redirected Commands", () => {
       tool_name: "Bash",
       tool_input: { command: "./gradlew build --info" },
     });
-    assertRedirect(result, "Build tool redirected");
+    assertRedirect(result, "build tool reindirizzato");
   });
 
   test("Bash + mvn package: redirected to execute sandbox (Issue #38)", () => {
@@ -164,7 +164,7 @@ describe("Bash: Redirected Commands", () => {
       tool_name: "Bash",
       tool_input: { command: "mvn clean package -DskipTests" },
     });
-    assertRedirect(result, "Build tool redirected");
+    assertRedirect(result, "build tool reindirizzato");
   });
 });
 
@@ -211,7 +211,7 @@ describe("WebFetch", () => {
       "Expected original URL in reason",
     );
     assert.ok(
-      parsed.hookSpecificOutput.permissionDecisionReason.includes("Do NOT use curl"),
+      parsed.hookSpecificOutput.permissionDecisionReason.includes("Non usare curl"),
       "Expected curl warning in reason",
     );
   });
@@ -470,62 +470,56 @@ describe("Security Policy Enforcement", () => {
   });
 });
 
-describe("Plugin Tool Name Format in ROUTING_BLOCK", () => {
-  // When installed via Claude Code plugin marketplace, tool names follow:
-  //   mcp__plugin_<plugin-id>_<server-name>__<tool-name>
-  // For context-mode: mcp__plugin_context-mode_context-mode__<tool-name>
-  // The short form mcp__context-mode__* only works for direct MCP registration.
-
-  const PLUGIN_PREFIX = "mcp__plugin_context-mode_context-mode__";
+describe("Codex Tool Name Format in ROUTING_BLOCK", () => {
   const SHORT_PREFIX = "mcp__context-mode__";
 
-  test("Agent routing block uses plugin-format tool names", () => {
+  test("Agent routing block uses Codex bare tool names", () => {
     const result = runHook({ tool_name: "Agent", tool_input: { prompt: "Do something." } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const prompt = parsed.hookSpecificOutput.updatedInput.prompt;
-    assert.ok(prompt.includes(PLUGIN_PREFIX + "ctx_batch_execute"), "Expected plugin-format ctx_batch_execute");
-    assert.ok(prompt.includes(PLUGIN_PREFIX + "ctx_search"), "Expected plugin-format ctx_search");
-    assert.ok(prompt.includes(PLUGIN_PREFIX + "ctx_execute"), "Expected plugin-format ctx_execute");
-    assert.ok(prompt.includes(PLUGIN_PREFIX + "ctx_fetch_and_index"), "Expected plugin-format ctx_fetch_and_index");
-    assert.ok(!prompt.includes(SHORT_PREFIX + "ctx_batch_execute"), "Must not contain short-form ctx_batch_execute");
+    assert.ok(prompt.includes("ctx_batch_execute"), "Expected ctx_batch_execute");
+    assert.ok(prompt.includes("ctx_search"), "Expected ctx_search");
+    assert.ok(prompt.includes("ctx_execute"), "Expected ctx_execute");
+    assert.ok(prompt.includes("ctx_fetch_and_index"), "Expected ctx_fetch_and_index");
+    assert.ok(!prompt.includes(SHORT_PREFIX + "ctx_batch_execute"), "Must not contain short-form MCP prefix");
   });
 
-  test("Read nudge uses plugin-format execute_file tool name", () => {
+  test("Read nudge uses Codex bare execute_file tool name", () => {
     const result = runHook({ tool_name: "Read", tool_input: { file_path: "/some/file.ts" } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes(PLUGIN_PREFIX + "ctx_execute_file"), "Expected plugin-format ctx_execute_file in Read nudge");
-    assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute_file"), "Read nudge must not contain short-form ctx_execute_file");
+    assert.ok(ctx.includes("ctx_execute_file"), "Expected ctx_execute_file in Read nudge");
+    assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute_file"), "Read nudge must not contain short-form MCP prefix");
   });
 
-  test("Grep nudge uses plugin-format execute tool name", () => {
+  test("Grep nudge uses Codex bare execute tool name", () => {
     const result = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO" } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes(PLUGIN_PREFIX + "ctx_execute"), "Expected plugin-format ctx_execute in Grep nudge");
-    assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute"), "Grep nudge must not contain short-form ctx_execute");
+    assert.ok(ctx.includes("ctx_execute"), "Expected ctx_execute in Grep nudge");
+    assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute"), "Grep nudge must not contain short-form MCP prefix");
   });
 
-  test("WebFetch deny reason uses plugin-format fetch_and_index tool name", () => {
+  test("WebFetch deny reason uses Codex bare fetch_and_index tool name", () => {
     const result = runHook({ tool_name: "WebFetch", tool_input: { url: "https://example.com" } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const reason = parsed.hookSpecificOutput.permissionDecisionReason;
-    assert.ok(reason.includes(PLUGIN_PREFIX + "ctx_fetch_and_index"), "Expected plugin-format ctx_fetch_and_index in WebFetch deny");
-    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_fetch_and_index"), "WebFetch deny must not contain short-form");
+    assert.ok(reason.includes("ctx_fetch_and_index"), "Expected ctx_fetch_and_index in WebFetch deny");
+    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_fetch_and_index"), "WebFetch deny must not contain short-form MCP prefix");
   });
 
-  test("Bash inline-HTTP redirect uses plugin-format execute tool name", () => {
+  test("Bash inline-HTTP redirect uses Codex bare execute tool name", () => {
     const bashCmd = "python3 -c 'import requests; requests.get(url)'";
     const result = runHook({ tool_name: "Bash", tool_input: { command: bashCmd } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const cmd = parsed.hookSpecificOutput.updatedInput.command;
-    assert.ok(cmd.includes(PLUGIN_PREFIX + "ctx_execute"), "Expected plugin-format ctx_execute in inline-HTTP redirect");
-    assert.ok(!cmd.includes(SHORT_PREFIX + "ctx_execute"), "Inline-HTTP redirect must not contain short-form ctx_execute");
+    assert.ok(cmd.includes("ctx_execute"), "Expected ctx_execute in inline-HTTP redirect");
+    assert.ok(!cmd.includes(SHORT_PREFIX + "ctx_execute"), "Inline-HTTP redirect must not contain short-form MCP prefix");
   });
 });
 
