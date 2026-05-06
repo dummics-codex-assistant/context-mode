@@ -32,7 +32,7 @@ let routePreToolUse: (
   additionalContext?: string;
 } | null;
 
-let resetGuidanceThrottle: () => void;
+let resetGuidanceThrottle: (sessionId?: string) => void;
 let ROUTING_BLOCK: string;
 let createRoutingBlock: (t: any, options?: { includeCommands?: boolean }) => string;
 let READ_GUIDANCE: string;
@@ -378,6 +378,7 @@ describe("routePreToolUse", () => {
 
     it("keeps Codex in MCP-required retrieval mode after a noisy deny", () => {
       const sessionId = "sticky-codex-test";
+      resetGuidanceThrottle(sessionId);
       const first = routePreToolUse(
         "Bash",
         { command: "rg TODO" },
@@ -400,10 +401,68 @@ describe("routePreToolUse", () => {
       expect(fallback!.action).toBe("deny");
       expect(fallback!.reason).toContain("retrieval MCP richiesto");
       expect(fallback!.reason).toContain("ctx_batch_execute");
+      expect(fallback!.reason).toContain("ctx_search");
+    });
+
+    it("clears Codex MCP-required retrieval mode after a context-mode tool call", () => {
+      const sessionId = "sticky-codex-clear-test";
+      resetGuidanceThrottle(sessionId);
+      const first = routePreToolUse(
+        "Bash",
+        { command: "rg TODO" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(first).not.toBeNull();
+      expect(first!.action).toBe("deny");
+
+      const mcp = routePreToolUse(
+        "mcp__context_mode__ctx_batch_execute",
+        { commands: [], queries: [] },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(mcp).toBeNull();
+
+      const targetedRead = routePreToolUse(
+        "Bash",
+        { command: "Get-Content hooks/core/routing.mjs | Select-Object -First 40" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(targetedRead).not.toBeNull();
+      expect(targetedRead!.action).toBe("context");
+      expect(targetedRead!.reason ?? targetedRead!.additionalContext ?? "").not.toContain(
+        "retrieval MCP richiesto",
+      );
+    });
+
+    it("recognizes bare ctx_search as a context-mode tool for Codex sticky mode", () => {
+      const sessionId = "sticky-codex-clear-bare-test";
+      resetGuidanceThrottle(sessionId);
+      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
+
+      expect(
+        routePreToolUse("ctx_search", { queries: ["routing"] }, "/tmp", "codex", sessionId),
+      ).toBeNull();
+
+      const result = routePreToolUse(
+        "Bash",
+        { command: "Get-Content hooks/core/routing.mjs | Select-Object -First 40" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
     });
 
     it("does not block non-retrieval shell after Codex enters MCP-required mode", () => {
       const sessionId = "sticky-codex-safe-shell-test";
+      resetGuidanceThrottle(sessionId);
       routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
 
       const result = routePreToolUse(
@@ -413,8 +472,8 @@ describe("routePreToolUse", () => {
         "codex",
         sessionId,
       );
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
+      expect(result?.action).not.toBe("deny");
+      expect(result?.reason ?? "").not.toContain("retrieval MCP richiesto");
     });
 
     it("redirects broad text searches but allows bounded rg", () => {
