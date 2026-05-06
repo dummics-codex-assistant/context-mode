@@ -16,7 +16,7 @@ import {
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, openSync, closeSync, constants as fsConstants } from "node:fs";
+import { existsSync, mkdirSync, rmSync, openSync, closeSync, readFileSync, writeFileSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -33,6 +33,10 @@ function codexRetrievalMarkerPath(sessionId) {
   return resolve(guidanceDirFor(sessionId), "codex-retrieval-mcp-required");
 }
 
+function codexRetrievalDenyCountPath(sessionId) {
+  return resolve(guidanceDirFor(sessionId), "codex-retrieval-deny-count");
+}
+
 function markCodexRetrievalRequired(sessionId) {
   try { mkdirSync(guidanceDirFor(sessionId), { recursive: true }); } catch {}
   try {
@@ -47,6 +51,18 @@ function isCodexRetrievalRequired(sessionId) {
 
 function clearCodexRetrievalRequired(sessionId) {
   try { rmSync(codexRetrievalMarkerPath(sessionId), { force: true }); } catch {}
+  try { rmSync(codexRetrievalDenyCountPath(sessionId), { force: true }); } catch {}
+}
+
+function nextCodexRetrievalDenyCount(sessionId) {
+  const path = codexRetrievalDenyCountPath(sessionId);
+  let count = 0;
+  try {
+    count = Number.parseInt(String(readFileSync(path, "utf8")), 10) || 0;
+  } catch {}
+  count += 1;
+  try { writeFileSync(path, String(count)); } catch {}
+  return count;
 }
 
 function unwrapEchoMessage(value) {
@@ -171,6 +187,10 @@ function isRetrievalFallbackShell(command) {
     /(^|\s|&&|\|\||\;)(Get-ChildItem|gci|ls|dir|tree)\b/i.test(stripped) ||
     /(^|\s|&&|\|\||\;)(Get-Content|gc|cat|type)\b/i.test(stripped)
   );
+}
+
+function isBoundedRetrievalFallbackShell(command) {
+  return isRetrievalFallbackShell(command) && isBoundedShellOutput(command);
 }
 
 function isContextModeMcpTool(toolName) {
@@ -314,7 +334,22 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // like `gh issue edit --body "text with curl in it"` (Issue #63).
     const stripped = stripQuotedContent(command);
 
+    if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isBoundedRetrievalFallbackShell(command)) {
+      return guidanceOnce(
+        "codex-retrieval-bounded-fallback",
+        "context-mode: sticky retrieval mode attivo, ma questo comando e' bounded. Procedi pure per verifica mirata; non allargare a scansioni ricorsive o output grezzo.",
+        sessionId,
+      );
+    }
+
     if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isRetrievalFallbackShell(command)) {
+      const denyCount = nextCodexRetrievalDenyCount(sessionId);
+      if (denyCount > 1) {
+        return mcpRedirect({
+          action: "deny",
+          reason: `context-mode: retrieval MCP ancora richiesto. Usa ${t("ctx_batch_execute")} con comandi sh/POSIX bounded e query mirate, oppure una shell bounded esplicita (head/--max-count/-TotalCount/Select-Object -First) se serve solo verificare pochi risultati.`,
+        });
+      }
       return mcpRedirect({
         action: "deny",
         reason: `context-mode: retrieval MCP richiesto. Il comando precedente e' stato bloccato per proteggere il contesto; non aggirarlo con shell/read/grep piu' piccoli. Prossima azione: chiama ${t("ctx_batch_execute")}(commands, queries) con label descrittive, comandi bounded che stampano path+linee (es. pwd; rg -n ... | head -200), timeout esplicito e 3-6 query di recupero. I comandi ctx_* girano in shell tipo sh/POSIX: evita PowerShell (Get-Content, Select-Object, backslash Windows) e verifica cwd/path con pwd/ls se serve. Evita scansioni enormi in un batch solo (es. tutta Documents o tutta .codex/skills): fai prima shortlist di path/indici, poi amplia se serve. Poi usa ${t("ctx_search")}(queries: [...]) per follow-up su output gia' indicizzato. Per un singolo file grande usa ${t("ctx_execute_file")}(path, language, code). Dopo un tool ctx_* riuscito, shell mirata torna disponibile per verifiche brevi. Shell normale resta ok per Git breve, edit, mkdir/rm/mv e comandi non di retrieval.`,
