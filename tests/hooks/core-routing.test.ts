@@ -283,6 +283,97 @@ describe("routePreToolUse", () => {
       // Quoted/echo passes context, not modify
       expect(r2?.action).not.toBe("modify");
     });
+
+    it("redirects recursive listings to ctx_execute", () => {
+      const result = routePreToolUse("Bash", {
+        command: "Get-ChildItem -Recurse",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "listing ricorsivo",
+      );
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "ctx_execute",
+      );
+    });
+
+    it("redirects unbounded GitHub Actions logs to ctx_execute", () => {
+      const result = routePreToolUse("Bash", {
+        command: "gh run view 123 --log",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "log non limitato",
+      );
+    });
+
+    it("redirects unbounded git log but allows bounded history", () => {
+      const unbounded = routePreToolUse("Bash", { command: "git log" });
+      expect(unbounded).not.toBeNull();
+      expect(unbounded!.action).toBe("modify");
+      expect((unbounded!.updatedInput as Record<string, string>).command).toContain(
+        "storia git non limitata",
+      );
+
+      resetGuidanceThrottle();
+      const bounded = routePreToolUse("Bash", {
+        command: "git log --oneline --max-count 20",
+      });
+      expect(bounded).not.toBeNull();
+      expect(bounded!.action).toBe("context");
+    });
+
+    it("redirects unbounded git diff but allows diff summaries", () => {
+      const unbounded = routePreToolUse("Bash", { command: "git diff" });
+      expect(unbounded).not.toBeNull();
+      expect(unbounded!.action).toBe("modify");
+      expect((unbounded!.updatedInput as Record<string, string>).command).toContain(
+        "diff git completo",
+      );
+
+      resetGuidanceThrottle();
+      const stat = routePreToolUse("Bash", { command: "git diff --stat" });
+      expect(stat).not.toBeNull();
+      expect(stat!.action).toBe("context");
+    });
+
+    it("redirects unbounded test runners to ctx_execute", () => {
+      const result = routePreToolUse("Bash", { command: "npm test" });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "test runner non limitato",
+      );
+    });
+
+    it("redirects broad text searches but allows bounded rg", () => {
+      const broad = routePreToolUse("Bash", { command: "rg TODO" });
+      expect(broad).not.toBeNull();
+      expect(broad!.action).toBe("modify");
+      expect((broad!.updatedInput as Record<string, string>).command).toContain(
+        "ricerca testuale non limitata",
+      );
+
+      resetGuidanceThrottle();
+      const bounded = routePreToolUse("Bash", {
+        command: "rg --max-count 20 TODO",
+      });
+      expect(bounded).not.toBeNull();
+      expect(bounded!.action).toBe("context");
+    });
+
+    it("redirects raw log/data reads through shell", () => {
+      const result = routePreToolUse("Bash", {
+        command: "Get-Content app.log",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "lettura raw di file dati/log",
+      );
+    });
   });
 
   // ─── Read routing ──────────────────────────────────────
