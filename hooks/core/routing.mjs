@@ -30,6 +30,23 @@ function mcpRedirect(result) {
   return result;
 }
 import { homedir, tmpdir } from "node:os";
+
+function unwrapEchoMessage(value) {
+  return String(value ?? "")
+    .replace(/^echo\s+["']?/i, "")
+    .replace(/["']?\s*$/, "");
+}
+
+function mcpRedirectFor(platform, result) {
+  if (platform === "codex" && result?.action === "modify") {
+    return mcpRedirect({
+      action: "deny",
+      reason: unwrapEchoMessage(result.updatedInput?.command)
+        || "context-mode: output potenzialmente rumoroso bloccato. Usa i tool ctx_* MCP.",
+    });
+  }
+  return mcpRedirect(result);
+}
 import { resolve } from "node:path";
 
 // Guidance throttle: show each advisory type at most once per session.
@@ -333,9 +350,9 @@ function isBoundedShellOutput(command) {
   );
 }
 
-function redirectNoisyShell(t, command, reason, filter = "2>&1 | tail -80") {
+function redirectNoisyShell(t, platform, command, reason, filter = "2>&1 | tail -80") {
   const safeCmd = escapeForHookEcho(`${command} ${filter}`.trim());
-  return mcpRedirect({
+  return mcpRedirectFor(platform, {
     action: "modify",
     updatedInput: {
       command: `echo "context-mode: ${reason}. Output potenzialmente rumoroso bloccato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd}\\") per indicizzare tutto e stampare solo sintesi/errori. Non riprovare via shell grezza."`,
@@ -725,7 +742,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       });
 
       if (hasDangerousSegment) {
-        return mcpRedirect({
+        return mcpRedirectFor(platform, {
           action: "modify",
           updatedInput: {
             command: `echo "context-mode: curl/wget bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo la risposta utile. Oppure usa ${t("ctx_fetch_and_index")}(url, source) per indicizzare e poi cercare. JavaScript puro, try/catch, niente npm deps. Non riprovare con curl/wget."`,
@@ -756,7 +773,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       /requests\.(get|post|put)\s*\(/i.test(noHeredoc) ||
       /http\.(get|request)\s*\(/i.test(noHeredoc)
     ) {
-      return mcpRedirect({
+      return mcpRedirectFor(platform, {
         action: "modify",
         updatedInput: {
           command: `echo "context-mode: HTTP inline bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo il risultato utile. JavaScript puro con try/catch, niente npm deps. Non riprovare via shell."`,
@@ -769,7 +786,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // Word-boundary guard prevents matching `gradle-wrapper-config`, `mvnDocker`, etc.
     if (/(^|\s|&&|\||\;)(\.\/gradlew|gradlew|gradle|\.\/mvnw|mvnw|mvn|\.\/sbt|sbt)(\s|$)/i.test(stripped)) {
       const safeCmd = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      return mcpRedirect({
+      return mcpRedirectFor(platform, {
         action: "modify",
         updatedInput: {
           command: `echo "context-mode: build tool reindirizzato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") per stampare solo errori o sintesi. Non riprovare via shell grezza."`,
@@ -789,31 +806,31 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // dumping logs, recursive trees, full diffs, or broad search results into chat.
     if (!isBoundedShellOutput(command)) {
       if (/(^|\s|&&|\|\||\;)(ls\s+(-[A-Za-z]*R[A-Za-z]*\b|.*\s--recursive\b)|dir\s+\/s\b|tree\b|Get-ChildItem\b.*\s-Recurse\b|gci\b.*\s-Recurse\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "listing ricorsivo", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, command, "listing ricorsivo", "2>&1 | head -200");
       }
 
       if (/(^|\s|&&|\|\||\;)(docker\s+logs|kubectl\s+logs|journalctl|gh\s+run\s+view\b.*\s--log\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "log non limitato");
+        return redirectNoisyShell(t, platform, command, "log non limitato");
       }
 
       if (/(^|\s|&&|\|\||\;)(git\s+log|git\s+reflog)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
+        return redirectNoisyShell(t, platform, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
       }
 
       if (/(^|\s|&&|\|\||\;)(git\s+diff|git\s+show)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "diff git completo non limitato", "2>&1 | head -240");
+        return redirectNoisyShell(t, platform, command, "diff git completo non limitato", "2>&1 | head -240");
       }
 
       if (/(^|\s|&&|\|\||\;)((npx\s+)?vitest|jest|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "test runner non limitato");
+        return redirectNoisyShell(t, platform, command, "test runner non limitato");
       }
 
       if (/(^|\s|&&|\|\||\;)(rg|grep)\b/i.test(stripped) && !/\b(rg|grep)\s+--files\b/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "ricerca testuale non limitata", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, command, "ricerca testuale non limitata", "2>&1 | head -200");
       }
 
       if (/(^|\s|&&|\|\||\;)(cat|type|Get-Content|gc)\b.*\.(log|jsonl|csv|tsv|xml|html)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, command, "lettura raw di file dati/log", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, command, "lettura raw di file dati/log", "2>&1 | head -200");
       }
     }
 

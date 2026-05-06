@@ -102,10 +102,22 @@ describe("routePreToolUse", () => {
         "codex-cmd-curl",
       );
       expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget blocked",
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toContain("curl/wget bloccato");
+      expect(result!.reason).toContain("ctx_execute");
+    });
+
+    it("denies curl commands on Codex because Codex cannot rewrite tool input", () => {
+      const result = routePreToolUse(
+        "Bash",
+        { command: "curl https://example.com" },
+        "/tmp",
+        "codex",
       );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toContain("curl/wget bloccato");
+      expect(result!.reason).toContain("ctx_execute");
     });
 
     it("denies wget commands with modify action", () => {
@@ -370,6 +382,19 @@ describe("routePreToolUse", () => {
       expect((result!.updatedInput as Record<string, string>).command).toContain(
         "test runner non limitato",
       );
+    });
+
+    it("denies unbounded test runners on Codex because guidance-only redirects are ignored", () => {
+      const result = routePreToolUse(
+        "Bash",
+        { command: "npm test" },
+        "/tmp",
+        "codex",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toContain("test runner non limitato");
+      expect(result!.reason).toContain("ctx_execute");
     });
 
     it("redirects broad text searches but allows bounded rg", () => {
