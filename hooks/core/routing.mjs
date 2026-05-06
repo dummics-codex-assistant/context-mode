@@ -31,14 +31,31 @@ function mcpRedirect(result) {
 }
 import { homedir, tmpdir } from "node:os";
 
+function codexRetrievalMarkerPath(sessionId) {
+  return resolve(guidanceDirFor(sessionId), "codex-retrieval-mcp-required");
+}
+
+function markCodexRetrievalRequired(sessionId) {
+  try { mkdirSync(guidanceDirFor(sessionId), { recursive: true }); } catch {}
+  try {
+    const fd = openSync(codexRetrievalMarkerPath(sessionId), fsConstants.O_CREAT | fsConstants.O_WRONLY);
+    closeSync(fd);
+  } catch {}
+}
+
+function isCodexRetrievalRequired(sessionId) {
+  try { return existsSync(codexRetrievalMarkerPath(sessionId)); } catch { return false; }
+}
+
 function unwrapEchoMessage(value) {
   return String(value ?? "")
     .replace(/^echo\s+["']?/i, "")
     .replace(/["']?\s*$/, "");
 }
 
-function mcpRedirectFor(platform, result) {
+function mcpRedirectFor(platform, result, sessionId) {
   if (platform === "codex" && result?.action === "modify") {
+    markCodexRetrievalRequired(sessionId);
     return mcpRedirect({
       action: "deny",
       reason: unwrapEchoMessage(result.updatedInput?.command)
@@ -350,14 +367,23 @@ function isBoundedShellOutput(command) {
   );
 }
 
-function redirectNoisyShell(t, platform, command, reason, filter = "2>&1 | tail -80") {
+function isRetrievalFallbackShell(command) {
+  const stripped = stripQuotedContent(command);
+  return (
+    /(^|\s|&&|\|\||\;)(rg|grep|findstr|Select-String)\b/i.test(stripped) ||
+    /(^|\s|&&|\|\||\;)(Get-ChildItem|gci|ls|dir|tree)\b/i.test(stripped) ||
+    /(^|\s|&&|\|\||\;)(Get-Content|gc|cat|type)\b/i.test(stripped)
+  );
+}
+
+function redirectNoisyShell(t, platform, sessionId, command, reason, filter = "2>&1 | tail -80") {
   const safeCmd = escapeForHookEcho(`${command} ${filter}`.trim());
   return mcpRedirectFor(platform, {
     action: "modify",
     updatedInput: {
       command: `echo "context-mode: ${reason}. Output potenzialmente rumoroso bloccato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd}\\") per indicizzare tutto e stampare solo sintesi/errori. Non riprovare via shell grezza."`,
     },
-  });
+  }, sessionId);
 }
 
 // Try to import security module — may not exist
@@ -705,6 +731,13 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // like `gh issue edit --body "text with curl in it"` (Issue #63).
     const stripped = stripQuotedContent(command);
 
+    if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isRetrievalFallbackShell(command)) {
+      return mcpRedirect({
+        action: "deny",
+        reason: `context-mode: retrieval MCP richiesto. Il comando precedente e' stato bloccato per proteggere il contesto; non aggirarlo con shell/read/grep piu' piccoli. Prossima azione: chiama ${t("ctx_batch_execute")}(commands, queries) per scouting multi-file oppure ${t("ctx_execute")}(language: "shell", code: "...") / ${t("ctx_execute_file")}(path, language, code) per analisi mirata. Shell normale resta ok per Git breve, edit, mkdir/rm/mv e comandi non di retrieval.`,
+      });
+    }
+
     // curl/wget — allow silent file-output downloads, block stdout floods (#166).
     // Algorithm: split chained commands, evaluate each segment independently.
     if (/(^|\s|&&|\||\;)(curl|wget)\s/i.test(stripped)) {
@@ -756,7 +789,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
             bytesAvoided: 8192,
             commandSummary: command.slice(0, 200),
           },
-        });
+        }, sessionId);
       }
       // All segments safe → allow through
       return null;
@@ -778,7 +811,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         updatedInput: {
           command: `echo "context-mode: HTTP inline bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo il risultato utile. JavaScript puro con try/catch, niente npm deps. Non riprovare via shell."`,
         },
-      });
+      }, sessionId);
     }
 
     // Build tools (gradle, maven, sbt) → redirect to execute sandbox (Issue #38, #406).
@@ -791,7 +824,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         updatedInput: {
           command: `echo "context-mode: build tool reindirizzato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") per stampare solo errori o sintesi. Non riprovare via shell grezza."`,
         },
-      });
+      }, sessionId);
     }
 
     // Skip the routing nudge for commands whose output is structurally
@@ -806,31 +839,31 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // dumping logs, recursive trees, full diffs, or broad search results into chat.
     if (!isBoundedShellOutput(command)) {
       if (/(^|\s|&&|\|\||\;)(ls\s+(-[A-Za-z]*R[A-Za-z]*\b|.*\s--recursive\b)|dir\s+\/s\b|tree\b|Get-ChildItem\b.*\s-Recurse\b|gci\b.*\s-Recurse\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "listing ricorsivo", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, sessionId, command, "listing ricorsivo", "2>&1 | head -200");
       }
 
       if (/(^|\s|&&|\|\||\;)(docker\s+logs|kubectl\s+logs|journalctl|gh\s+run\s+view\b.*\s--log\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "log non limitato");
+        return redirectNoisyShell(t, platform, sessionId, command, "log non limitato");
       }
 
       if (/(^|\s|&&|\|\||\;)(git\s+log|git\s+reflog)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
+        return redirectNoisyShell(t, platform, sessionId, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
       }
 
       if (/(^|\s|&&|\|\||\;)(git\s+diff|git\s+show)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "diff git completo non limitato", "2>&1 | head -240");
+        return redirectNoisyShell(t, platform, sessionId, command, "diff git completo non limitato", "2>&1 | head -240");
       }
 
       if (/(^|\s|&&|\|\||\;)((npx\s+)?vitest|jest|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "test runner non limitato");
+        return redirectNoisyShell(t, platform, sessionId, command, "test runner non limitato");
       }
 
       if (/(^|\s|&&|\|\||\;)(rg|grep)\b/i.test(stripped) && !/\b(rg|grep)\s+--files\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "ricerca testuale non limitata", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, sessionId, command, "ricerca testuale non limitata", "2>&1 | head -200");
       }
 
       if (/(^|\s|&&|\|\||\;)(cat|type|Get-Content|gc)\b.*\.(log|jsonl|csv|tsv|xml|html)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, command, "lettura raw di file dati/log", "2>&1 | head -200");
+        return redirectNoisyShell(t, platform, sessionId, command, "lettura raw di file dati/log", "2>&1 | head -200");
       }
     }
 

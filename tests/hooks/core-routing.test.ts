@@ -397,6 +397,47 @@ describe("routePreToolUse", () => {
       expect(result!.reason).toContain("ctx_execute");
     });
 
+    it("keeps Codex in MCP-required retrieval mode after a noisy deny", () => {
+      const sessionId = "sticky-codex-test";
+      const first = routePreToolUse(
+        "Bash",
+        { command: "rg TODO" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(first).not.toBeNull();
+      expect(first!.action).toBe("deny");
+      expect(first!.reason).toContain("ricerca testuale non limitata");
+
+      const fallback = routePreToolUse(
+        "Bash",
+        { command: "Get-Content hooks/core/routing.mjs | Select-Object -First 40" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(fallback).not.toBeNull();
+      expect(fallback!.action).toBe("deny");
+      expect(fallback!.reason).toContain("retrieval MCP richiesto");
+      expect(fallback!.reason).toContain("ctx_batch_execute");
+    });
+
+    it("does not block non-retrieval shell after Codex enters MCP-required mode", () => {
+      const sessionId = "sticky-codex-safe-shell-test";
+      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
+
+      const result = routePreToolUse(
+        "Bash",
+        { command: "git status --short" },
+        "/tmp",
+        "codex",
+        sessionId,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
+    });
+
     it("redirects broad text searches but allows bounded rg", () => {
       const broad = routePreToolUse("Bash", { command: "rg TODO" });
       expect(broad).not.toBeNull();
