@@ -402,6 +402,12 @@ describe("routePreToolUse", () => {
       expect(fallback!.reason).toContain("retrieval MCP richiesto");
       expect(fallback!.reason).toContain("ctx_batch_execute");
       expect(fallback!.reason).toContain("ctx_search");
+      expect(fallback!.reason).toContain("shell tipo sh/POSIX");
+      expect(fallback!.reason).toContain("evita PowerShell");
+      expect(fallback!.reason).toContain("pwd");
+      expect(fallback!.reason).toContain("head -200");
+      expect(fallback!.reason).toContain("Evita scansioni enormi");
+      expect(fallback!.reason).toContain("shortlist");
     });
 
     it("clears Codex MCP-required retrieval mode after a context-mode tool call", () => {
