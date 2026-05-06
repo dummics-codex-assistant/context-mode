@@ -319,6 +319,30 @@ export function isStructurallyBounded(command) {
   return SAFE_COMMAND_PATTERNS.some(rx => rx.test(trimmed));
 }
 
+function escapeForHookEcho(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function isBoundedShellOutput(command) {
+  return (
+    /\|\s*(head|tail|sed\s+-n|Select-Object\s+-(First|Last))\b/i.test(command) ||
+    /\b(head|tail)\s+-(n\s*)?\d+\b/i.test(command) ||
+    /(^|\s)(--max-count|-m|--count|--files-with-matches|--json|--stat|--name-only|--name-status|--check)(\s|=|$)/i.test(command) ||
+    /(^|\s)(-n|--max-count)\s*=?\s*\d+\b/i.test(command) ||
+    /\b(Tail|TotalCount|First|Last)\s+\d+\b/i.test(command)
+  );
+}
+
+function redirectNoisyShell(t, command, reason, filter = "2>&1 | tail -80") {
+  const safeCmd = escapeForHookEcho(`${command} ${filter}`.trim());
+  return mcpRedirect({
+    action: "modify",
+    updatedInput: {
+      command: `echo "context-mode: ${reason}. Output potenzialmente rumoroso bloccato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd}\\") per indicizzare tutto e stampare solo sintesi/errori. Non riprovare via shell grezza."`,
+    },
+  });
+}
+
 // Try to import security module — may not exist
 let security = null;
 let securityInitFailed = false;
@@ -759,6 +783,38 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // still get the nudge.
     if (isStructurallyBounded(command)) {
       return null;
+    }
+
+    // Strict noise budget for Dom's Codex fork: prevent common commands from
+    // dumping logs, recursive trees, full diffs, or broad search results into chat.
+    if (!isBoundedShellOutput(command)) {
+      if (/(^|\s|&&|\|\||\;)(ls\s+(-[A-Za-z]*R[A-Za-z]*\b|.*\s--recursive\b)|dir\s+\/s\b|tree\b|Get-ChildItem\b.*\s-Recurse\b|gci\b.*\s-Recurse\b)/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "listing ricorsivo", "2>&1 | head -200");
+      }
+
+      if (/(^|\s|&&|\|\||\;)(docker\s+logs|kubectl\s+logs|journalctl|gh\s+run\s+view\b.*\s--log\b)/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "log non limitato");
+      }
+
+      if (/(^|\s|&&|\|\||\;)(git\s+log|git\s+reflog)\b/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
+      }
+
+      if (/(^|\s|&&|\|\||\;)(git\s+diff|git\s+show)\b/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "diff git completo non limitato", "2>&1 | head -240");
+      }
+
+      if (/(^|\s|&&|\|\||\;)((npx\s+)?vitest|jest|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "test runner non limitato");
+      }
+
+      if (/(^|\s|&&|\|\||\;)(rg|grep)\b/i.test(stripped) && !/\b(rg|grep)\s+--files\b/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "ricerca testuale non limitata", "2>&1 | head -200");
+      }
+
+      if (/(^|\s|&&|\|\||\;)(cat|type|Get-Content|gc)\b.*\.(log|jsonl|csv|tsv|xml|html)\b/i.test(stripped)) {
+        return redirectNoisyShell(t, command, "lettura raw di file dati/log", "2>&1 | head -200");
+      }
     }
 
     // allow all other Bash commands, but inject routing nudge (once per session)
