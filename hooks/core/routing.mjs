@@ -47,6 +47,10 @@ function isCodexRetrievalRequired(sessionId) {
   try { return existsSync(codexRetrievalMarkerPath(sessionId)); } catch { return false; }
 }
 
+function clearCodexRetrievalRequired(sessionId) {
+  try { rmSync(codexRetrievalMarkerPath(sessionId), { force: true }); } catch {}
+}
+
 function unwrapEchoMessage(value) {
   return String(value ?? "")
     .replace(/^echo\s+["']?/i, "")
@@ -376,6 +380,11 @@ function isRetrievalFallbackShell(command) {
   );
 }
 
+function isContextModeMcpTool(toolName) {
+  const name = String(toolName ?? "");
+  return /(?:context[-_]?mode|ctx_(?:batch_execute|execute|execute_file|search|fetch_and_index|index|stats|doctor|upgrade|insight|purge))/i.test(name);
+}
+
 function redirectNoisyShell(t, platform, sessionId, command, reason, filter = "2>&1 | tail -80") {
   const safeCmd = escapeForHookEcho(`${command} ${filter}`.trim());
   return mcpRedirectFor(platform, {
@@ -703,6 +712,10 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   const canonical = TOOL_ALIASES[toolName] ?? toolName;
   const platformSettingsPath = getPlatformSettingsPath(platform);
 
+  if (platform === "codex" && isContextModeMcpTool(toolName)) {
+    clearCodexRetrievalRequired(sessionId);
+  }
+
   // ─── Bash: Stage 1 security check, then Stage 2 routing ───
   if (canonical === "Bash") {
     const command = getShellCommand(toolInput);
@@ -734,7 +747,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isRetrievalFallbackShell(command)) {
       return mcpRedirect({
         action: "deny",
-        reason: `context-mode: retrieval MCP richiesto. Il comando precedente e' stato bloccato per proteggere il contesto; non aggirarlo con shell/read/grep piu' piccoli. Prossima azione: chiama ${t("ctx_batch_execute")}(commands, queries) per scouting multi-file oppure ${t("ctx_execute")}(language: "shell", code: "...") / ${t("ctx_execute_file")}(path, language, code) per analisi mirata. Shell normale resta ok per Git breve, edit, mkdir/rm/mv e comandi non di retrieval.`,
+        reason: `context-mode: retrieval MCP richiesto. Il comando precedente e' stato bloccato per proteggere il contesto; non aggirarlo con shell/read/grep piu' piccoli. Prossima azione: chiama ${t("ctx_batch_execute")}(commands, queries) con label descrittive, comandi che stampano path+linee (es. rg -n), e 3-6 query di recupero. Poi usa ${t("ctx_search")}(queries: [...]) per follow-up su output gia' indicizzato. Per un singolo file grande usa ${t("ctx_execute_file")}(path, language, code). Dopo un tool ctx_* riuscito, shell mirata torna disponibile per verifiche brevi. Shell normale resta ok per Git breve, edit, mkdir/rm/mv e comandi non di retrieval.`,
       });
     }
 
