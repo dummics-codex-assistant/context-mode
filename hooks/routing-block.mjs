@@ -44,6 +44,14 @@ export function createRoutingBlock(t, options = {}) {
     - Non ripetere un comando bloccato aggirando l'hook: riduci output, filtra o indicizza.
   </usage_guidance>
 
+  <forbidden_actions>
+    - Non usare shell normale per output atteso sopra circa 20 righe: usa ${t("ctx_batch_execute")} o ${t("ctx_execute")}.
+    - Non leggere file grandi solo per analizzarli: usa ${t("ctx_execute_file")}. Lettura normale ok se devi editare.
+    - Non usare fetch web raw: usa ${t("ctx_fetch_and_index")} e poi ${t("ctx_search")}.
+    - Shell normale ok per Git breve, mkdir/rm/mv/navigation, install/build/test con output filtrato.
+    - Non usare ${t("ctx_execute")} o ${t("ctx_execute_file")} per creare/modificare file.
+  </forbidden_actions>
+
   <file_writing_policy>
     Usa gli strumenti nativi di Codex per creare o modificare file.
     ${t("ctx_execute")} e ${t("ctx_execute_file")} servono per analisi/processamento, non come writer primario.

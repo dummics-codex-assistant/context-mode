@@ -28,12 +28,12 @@ describe("OpenCodeAdapter", () => {
   // ── Capabilities ──────────────────────────────────────
 
   describe("capabilities", () => {
-    it("sessionStart is false", () => {
-      expect(adapter.capabilities.sessionStart).toBe(false);
+    it("sessionStart is true", () => {
+      expect(adapter.capabilities.sessionStart).toBe(true);
     });
 
-    it("canInjectSessionContext is false", () => {
-      expect(adapter.capabilities.canInjectSessionContext).toBe(false);
+    it("canInjectSessionContext is true", () => {
+      expect(adapter.capabilities.canInjectSessionContext).toBe(true);
     });
 
     it("preToolUse and postToolUse are true", () => {
@@ -452,8 +452,8 @@ describe("OpenCodeAdapter for KiloCode", () => {
 
   describe("capabilities", () => {
     it("has same capabilities as OpenCode", () => {
-      expect(adapter.capabilities.sessionStart).toBe(false);
-      expect(adapter.capabilities.canInjectSessionContext).toBe(false);
+      expect(adapter.capabilities.sessionStart).toBe(true);
+      expect(adapter.capabilities.canInjectSessionContext).toBe(true);
       expect(adapter.capabilities.preToolUse).toBe(true);
       expect(adapter.capabilities.postToolUse).toBe(true);
       expect(adapter.paradigm).toBe("ts-plugin");
@@ -476,6 +476,33 @@ describe("OpenCodeAdapter for KiloCode", () => {
         expectedDir = join(configDir, "kilo", "context-mode", "sessions");
       }
       expect(sessionDir).toBe(expectedDir);
+    });
+
+    // Phase 7 Kilo-1 (LOW): Kilo runtime accepts `.kilocode/` as config dir
+    // alongside `.kilo/` and `.opencode/`. See refs/platforms/kilo/packages/
+    // opencode/src/kilocode/config/config.ts:50
+    //   KILO_DIR_SUFFIXES = [".kilo", ".kilocode"]
+    // Plugin loader globs {plugin,plugins}/*.{ts,js} in each config dir
+    // (refs/.../config/plugin.ts:33), so `.kilocode/kilo.json[c]` must be
+    // discoverable by the adapter for users who organize project config under
+    // `.kilocode/` instead of `.kilo/`.
+    it("readSettings discovers .kilocode/kilo.json", () => {
+      const root = mkdtempSync(join(tmpdir(), "kilo-paths-"));
+      const prev = process.cwd();
+      try {
+        mkdirSync(join(root, ".kilocode"), { recursive: true });
+        writeFileSync(
+          join(root, ".kilocode", "kilo.json"),
+          JSON.stringify({ marker: "from-dot-kilocode" }),
+        );
+        process.chdir(root);
+        const a = new OpenCodeAdapter("kilo");
+        const settings = a.readSettings() as { marker?: string } | null;
+        expect(settings?.marker).toBe("from-dot-kilocode");
+      } finally {
+        process.chdir(prev);
+        rmSync(root, { recursive: true, force: true });
+      }
     });
   });
 });

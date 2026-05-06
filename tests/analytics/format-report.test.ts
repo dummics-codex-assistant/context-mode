@@ -300,12 +300,13 @@ describe("formatReport", () => {
       });
       const output = formatReport(report, "1.0.71");
 
-      expect(output).toContain("1.7K events remembered across 6 sessions");
-      expect(output).toContain("searchable after compact & restart");
+      // New format (Bug #3 fix): "Persistent memory" header with lifetime line.
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("1.7K events");
+      expect(output).toContain("6 sessions");
       expect(output).toContain("Files tracked");
-      expect(output).toContain("Prompts saved");
-      expect(output).toContain("Git operations");
-      // Bars should contain unicode block characters
+      // Only top 2 categories are visible; rest collapse to "N more categories".
+      // Bars should contain unicode block characters.
       expect(output).toMatch(/[█░]/);
     });
 
@@ -322,7 +323,10 @@ describe("formatReport", () => {
       });
       const output = formatReport(report, "1.0.71");
 
-      expect(output).toContain("100 events remembered across 2 sessions");
+      // New format: "Persistent memory" header + cumulative line.
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("100 events");
+      expect(output).toContain("2 sessions");
       expect(output).toContain("Files tracked");
       expect(output).toContain("Git operations");
       expect(output).toMatch(/█/);
@@ -350,9 +354,9 @@ describe("formatReport", () => {
       const lines = output.split("\n");
       const fileLine = lines.findIndex((l: string) => l.includes("Files tracked"));
       const gitLine = lines.findIndex((l: string) => l.includes("Git operations"));
-      const errorLine = lines.findIndex((l: string) => l.includes("Errors caught"));
+      // Top-2 cap (Bug #5): "Errors caught" rolls into "1 more category".
       expect(fileLine).toBeLessThan(gitLine);
-      expect(gitLine).toBeLessThan(errorLine);
+      expect(output).toContain("1 more categor");
     });
 
     it("hides project memory when no events", () => {
@@ -386,8 +390,9 @@ describe("formatReport", () => {
       });
       const output = formatReport(report);
 
-      expect(output).toContain("across 1 session \u2014");
-      expect(output).not.toContain("sessions");
+      // New format includes "1 session" (no plural "s").
+      expect(output).toContain("1 session");
+      expect(output).not.toMatch(/\d+ sessions/);
     });
   });
 
@@ -438,11 +443,13 @@ describe("formatReport", () => {
       expect(lineCount).toBeLessThanOrEqual(32);
     });
 
-    it("fresh session output is under 8 lines without project memory", () => {
+    it("fresh session output is under 14 lines without project memory", () => {
+      // After Bug #8 we always render a 5-line "Bottom line" footer, so the
+      // empty-state header now fits within ~13 lines instead of the old 8.
       const report = makeReport();
       const output = formatReport(report, "1.0.71");
       const lineCount = output.split("\n").length;
-      expect(lineCount).toBeLessThanOrEqual(8);
+      expect(lineCount).toBeLessThanOrEqual(14);
     });
   });
 
@@ -579,8 +586,10 @@ describe("formatReport", () => {
       // Cache
       expect(output).toContain("cache hits");
 
-      // Project memory
-      expect(output).toContain("1.1K events remembered across 4 sessions");
+      // Project memory (new format — "Persistent memory" header + lifetime line).
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("1.1K events");
+      expect(output).toContain("4 sessions");
       expect(output).toContain("Files tracked");
 
       // Footer
@@ -658,6 +667,144 @@ describe("formatReport", () => {
 
       // Total under 32 lines
       expect(lines.length).toBeLessThanOrEqual(32);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// PR-B — Issue #2 (lifetime monotonic) + Issue #3 (PO copy)
+// ─────────────────────────────────────────────────────────
+
+describe("PR-B: stats UX fixes", () => {
+  describe("[Issue #2] lifetime ≥ session (monotonic)", () => {
+    it("footer: lifetime ≥ session when no prior LifetimeStats provided", () => {
+      // Fresh user, first session, real savings — lifetime must NOT show $0.
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 100_000,
+          kept_out: 1_000_000,
+          total_processed: 1_100_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108");
+
+      // Footer pattern: "$X.XX this session  ·  $Y.YY lifetime"
+      const footer = output.match(/\$(\d+\.\d{2})\s+this session\s+·\s+\$(\d+\.\d{2})\s+lifetime/);
+      expect(footer).toBeTruthy();
+      const sessionUsd = parseFloat(footer![1]);
+      const lifetimeUsd = parseFloat(footer![2]);
+
+      expect(sessionUsd).toBeGreaterThan(0);
+      expect(lifetimeUsd).toBeGreaterThanOrEqual(sessionUsd);
+    });
+
+    it("mid-table: 'saved lifetime' line ≥ session $", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 100_000,
+          kept_out: 1_000_000,
+          total_processed: 1_100_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108");
+
+      const sessionMatch = output.match(/\$(\d+\.\d{2})\s+this session/);
+      const midTableMatch = output.match(/~\$(\d+\.\d{2})\s+saved lifetime/);
+
+      expect(sessionMatch).toBeTruthy();
+      expect(midTableMatch).toBeTruthy();
+      const sessionUsd = parseFloat(sessionMatch![1]);
+      const lifetimeUsd = parseFloat(midTableMatch![1]);
+
+      expect(lifetimeUsd).toBeGreaterThanOrEqual(sessionUsd);
+    });
+
+    it("when prior lifetime > session, both render distinct values (footer)", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 1,
+          total_bytes_returned: 50_000,
+          kept_out: 200_000,
+          total_processed: 250_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        lifetime: {
+          totalEvents: 50_000,
+          totalSessions: 12,
+          autoMemoryCount: 0,
+          autoMemoryProjects: 0,
+          autoMemoryByPrefix: {},
+        },
+      });
+
+      const footer = output.match(/\$(\d+\.\d{2})\s+this session\s+·\s+\$(\d+\.\d{2})\s+lifetime/);
+      expect(footer).toBeTruthy();
+      const sessionUsd = parseFloat(footer![1]);
+      const lifetimeUsd = parseFloat(footer![2]);
+
+      expect(lifetimeUsd).toBeGreaterThan(sessionUsd);
+    });
+  });
+
+  describe("[Issue #3] MCP concurrency PO copy", () => {
+    it("renders 'Parallel I/O' heading and strips mcp__*__ namespace when max_concurrency > 1", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 1000,
+          kept_out: 5000,
+          total_processed: 6000,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        mcpUsage: [
+          {
+            tool_name: "mcp__context_mode__ctx_batch_execute",
+            calls: 43,
+            median_concurrency: 3,
+            max_concurrency: 5,
+          } as any,
+        ],
+      });
+
+      expect(output).toContain("Parallel I/O");
+      expect(output).toContain("ctx_batch_execute"); // bare name
+      expect(output).not.toContain("mcp__context_mode__"); // namespace stripped
+      expect(output).not.toContain("MCP concurrency usage"); // engineer-speak gone
+      expect(output).not.toContain("median="); // engineer-speak gone
+    });
+
+    it("hides MCP section entirely when max_concurrency ≤ 1 (no false parallelism claim)", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 1,
+          total_bytes_returned: 100,
+          kept_out: 200,
+          total_processed: 300,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        mcpUsage: [
+          {
+            tool_name: "mcp__context_mode__ctx_search",
+            calls: 5,
+            median_concurrency: 1,
+            max_concurrency: 1,
+          } as any,
+        ],
+      });
+
+      expect(output).not.toContain("Parallel I/O");
+      expect(output).not.toContain("MCP concurrency usage");
+      expect(output).not.toContain("median=");
     });
   });
 });

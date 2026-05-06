@@ -60,6 +60,10 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
     return resolve(homedir(), ".qwen", "settings.json");
   }
 
+  getInstructionFiles(): string[] {
+    return ["QWEN.md"];
+  }
+
   generateHookConfig(pluginRoot: string): HookRegistration {
     // Qwen Code passes native tool names in hook stdin (verified from
     // packages/core/src/tools/tool-names.ts). Claude-style names (Bash, Read)
@@ -264,6 +268,9 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
     }
 
     // ── Phase 2: Register fresh hooks ────────────────────
+    // All 5 hooks must be wired (z6 — capabilities declare 5 events but
+    // configureAllHooks previously only wrote 2). Qwen Code's hook stdin shape
+    // is wire-identical to Claude Code, so we reuse top-level hook scripts.
     const hookTypes: Array<{
       name: string;
       script: string;
@@ -281,8 +288,23 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
         ].join("|"),
       },
       {
+        name: "PostToolUse",
+        script: "posttooluse.mjs",
+        matcher: "run_shell_command|read_file|write_file|edit|glob|grep_search|todo_write|agent|ask_user_question|mcp__",
+      },
+      {
         name: "SessionStart",
         script: "sessionstart.mjs",
+        matcher: "",
+      },
+      {
+        name: "PreCompact",
+        script: "precompact.mjs",
+        matcher: "",
+      },
+      {
+        name: "UserPromptSubmit",
+        script: "userpromptsubmit.mjs",
         matcher: "",
       },
     ];

@@ -2,10 +2,16 @@
 import "../suppress-stderr.mjs";
 import "../ensure-deps.mjs";
 /**
- * VS Code Copilot SessionStart hook for context-mode
+ * VS Code Copilot SessionStart hook for context-mode (v1.0.107)
+ *
+ * Created to close the v1.0.107 audit-flagged path bug: hooks.ts:98
+ * was resolving SessionStart to the Claude-Code generic top-level
+ * `hooks/sessionstart.mjs`. With the fix, the path now resolves
+ * to this file. Mirrors the JetBrains Copilot hook (same shape,
+ * same Microsoft Copilot wire contract).
  *
  * Session lifecycle management:
- * - "startup"  → Cleanup old sessions, capture instruction file rules
+ * - "startup"  → Cleanup old sessions, capture .github/copilot-instructions.md as rule events
  * - "compact"  → Write events file, inject session knowledge directive
  * - "resume"   → Load previous session events, inject directive
  * - "clear"    → No action needed
@@ -17,15 +23,14 @@ import { createToolNamer } from "../core/tool-naming.mjs";
 
 const toolNamer = createToolNamer("vscode-copilot");
 const ROUTING_BLOCK = createRoutingBlock(toolNamer);
-import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "../session-directive.mjs";
+import { writeSessionEventsFile, buildSessionDirective, getSessionEvents } from "../session-directive.mjs";
 import {
   readStdin, parseStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath,
   getProjectDir, VSCODE_OPTS,
 } from "../session-helpers.mjs";
 import { join } from "node:path";
 import { readFileSync, unlinkSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = fileURLToPath(new URL(".", import.meta.url));
 const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
@@ -63,7 +68,9 @@ try {
     const dbPath = getSessionDBPath(OPTS);
     const db = new SessionDB({ dbPath });
 
-    const events = getLatestSessionEvents(db);
+    // Filter events to the session being resumed (cross-session bleed guard).
+    const sessionId = getSessionId(input, OPTS);
+    const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
       additionalContext += buildSessionDirective("resume", eventMeta, toolNamer);
@@ -83,12 +90,9 @@ try {
     const projectDir = getProjectDir(OPTS);
     db.ensureSession(sessionId, projectDir);
 
-    // Auto-write copilot-instructions.md on first startup if not present
-    try {
-      const { VSCodeCopilotAdapter } = await import(pathToFileURL(join(HOOK_DIR, "..", "..", "build", "adapters", "vscode-copilot", "index.js")).href);
-      new VSCodeCopilotAdapter().writeRoutingInstructions(projectDir, join(HOOK_DIR, "..", ".."));
-    } catch { /* best effort — don't block session start */ }
-
+    // VSCode Copilot's canonical project-level instruction file.
+    // Captured as rule_content events so they survive compact and become
+    // searchable via ctx_search() — same pattern as Claude Code captures CLAUDE.md.
     const ruleFilePaths = [
       join(projectDir, ".github", "copilot-instructions.md"),
     ];

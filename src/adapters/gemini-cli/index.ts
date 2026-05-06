@@ -59,6 +59,7 @@ interface GeminiCLIHookInput {
   is_error?: boolean;
   session_id?: string;
   source?: string;
+  cwd?: string;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       toolName: input.tool_name ?? "",
       toolInput: input.tool_input ?? {},
       sessionId: this.extractSessionId(input),
-      projectDir: this.getProjectDir(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -115,7 +116,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       toolOutput: input.tool_output,
       isError: input.is_error,
       sessionId: this.extractSessionId(input),
-      projectDir: this.getProjectDir(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -124,7 +125,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
     const input = raw as GeminiCLIHookInput;
     return {
       sessionId: this.extractSessionId(input),
-      projectDir: this.getProjectDir(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -151,7 +152,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
     return {
       sessionId: this.extractSessionId(input),
       source,
-      projectDir: this.getProjectDir(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -224,8 +225,23 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".gemini", "settings.json");
   }
 
+  getInstructionFiles(): string[] {
+    return ["GEMINI.md"];
+  }
+
   generateHookConfig(pluginRoot: string): HookRegistration {
     return {
+      [GEMINI_HOOK_NAMES.BEFORE_AGENT]: [
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "command",
+              command: buildGeminiHookCommand(GEMINI_HOOK_NAMES.BEFORE_AGENT, pluginRoot),
+            },
+          ],
+        },
+      ],
       [GEMINI_HOOK_NAMES.BEFORE_TOOL]: [
         {
           matcher: "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode",
@@ -431,6 +447,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
     const hookConfigs: Array<{
       name: string;
     }> = [
+      { name: GEMINI_HOOK_NAMES.BEFORE_AGENT },
       { name: GEMINI_HOOK_NAMES.BEFORE_TOOL },
       { name: GEMINI_HOOK_NAMES.SESSION_START },
     ];
@@ -508,9 +525,20 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
 
   // ── Internal helpers ───────────────────────────────────
 
-  /** Get the project directory from environment variables. */
-  private getProjectDir(): string | undefined {
-    return process.env.GEMINI_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR;
+  /**
+   * Resolve the project directory for a Gemini CLI hook input.
+   * Priority: input.cwd > GEMINI_PROJECT_DIR > CLAUDE_PROJECT_DIR > process.cwd().
+   * Mirrors the cursor / opencode pattern so downstream hooks always
+   * receive a defined projectDir even when the platform omits cwd
+   * from the wire payload (e.g. under worktrees).
+   */
+  private getProjectDir(input: GeminiCLIHookInput): string {
+    return (
+      input.cwd
+      ?? process.env.GEMINI_PROJECT_DIR
+      ?? process.env.CLAUDE_PROJECT_DIR
+      ?? process.cwd()
+    );
   }
 
   /**

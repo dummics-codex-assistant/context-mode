@@ -113,7 +113,7 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch blocked");
+      expect(String(payload.user_message)).toMatch(/WebFetch blocked|WebFetch bloccato/);
     });
 
     test("blocks mcp_web_fetch with the same sandbox redirect", () => {
@@ -127,7 +127,7 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch blocked");
+      expect(String(payload.user_message)).toMatch(/WebFetch blocked|WebFetch bloccato/);
       expect(String(payload.user_message)).toContain("ctx_fetch_and_index");
       expect(String(payload.user_message)).toContain("ctx_search");
     });
@@ -143,7 +143,7 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch blocked");
+      expect(String(payload.user_message)).toMatch(/WebFetch blocked|WebFetch bloccato/);
       expect(String(payload.user_message)).toContain("ctx_fetch_and_index");
       expect(String(payload.user_message)).toContain("ctx_search");
     });

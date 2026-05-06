@@ -426,6 +426,108 @@ describe("Resume Edge Cases", () => {
 });
 
 // ════════════════════════════════════════════
+// SLICE 12b: ATOMIC CLAIM LATEST UNCONSUMED RESUME
+// (PR #376 — Mickey: cross-session resume injection without
+// process-global UUID. Must be race-safe under concurrent processes.)
+// ════════════════════════════════════════════
+
+describe("Atomic claim of latest unconsumed resume", () => {
+  // Sentinel sessionId — when a caller has no current session yet (tests,
+  // legacy paths) we pass an empty string, which can never collide with
+  // a real session_id and therefore disables the self-exclusion clause.
+  const NO_SELF = "";
+
+  test("returns null when no resume rows exist", () => {
+    const db = createTestDB();
+    const claimed = db.claimLatestUnconsumedResume(NO_SELF);
+    assert.equal(claimed, null);
+  });
+
+  test("returns null when only consumed rows exist", () => {
+    const db = createTestDB();
+    db.ensureSession("sess-A", "/p");
+    db.upsertResume("sess-A", "<snap>A</snap>", 5);
+    db.markResumeConsumed("sess-A");
+
+    const claimed = db.claimLatestUnconsumedResume(NO_SELF);
+    assert.equal(claimed, null);
+  });
+
+  test("returns the most recent unconsumed snapshot and marks it consumed atomically", () => {
+    const db = createTestDB();
+    // Older row (already consumed — must be skipped)
+    db.ensureSession("sess-old", "/p");
+    db.upsertResume("sess-old", "<snap>old</snap>", 3);
+    db.markResumeConsumed("sess-old");
+
+    // Newer row (unconsumed — must be claimed)
+    db.ensureSession("sess-new", "/p");
+    db.upsertResume("sess-new", "<snap>new</snap>", 7);
+
+    const claimed = db.claimLatestUnconsumedResume(NO_SELF);
+    assert.deepEqual(claimed, { sessionId: "sess-new", snapshot: "<snap>new</snap>" });
+
+    // Second claim returns null — only one unconsumed row existed.
+    const second = db.claimLatestUnconsumedResume(NO_SELF);
+    assert.equal(second, null);
+
+    // The row's consumed flag is set
+    const row = db.getResume("sess-new");
+    assert.equal(row!.consumed, 1);
+  });
+
+  test("two parallel claims on the same DB instance return distinct snapshots (race-safe)", () => {
+    // Simulates two concurrent `chat.system.transform` invocations on
+    // the same project hitting the DB at the same time.
+    const db = createTestDB();
+    db.ensureSession("sess-1", "/p");
+    db.upsertResume("sess-1", "<snap>1</snap>", 1);
+    db.ensureSession("sess-2", "/p");
+    db.upsertResume("sess-2", "<snap>2</snap>", 2);
+
+    const a = db.claimLatestUnconsumedResume(NO_SELF);
+    const b = db.claimLatestUnconsumedResume(NO_SELF);
+    const c = db.claimLatestUnconsumedResume(NO_SELF);
+
+    assert.ok(a !== null);
+    assert.ok(b !== null);
+    assert.equal(c, null); // only 2 rows existed
+    assert.notEqual(a!.sessionId, b!.sessionId);
+  });
+
+  // v1.0.106 — Mickey #376 follow-up: prevent self-injection.
+  test("excludes the current session's own row (no self-injection)", () => {
+    const db = createTestDB();
+    db.ensureSession("sess-B", "/p");
+    db.upsertResume("sess-B", "<snap>B</snap>", 7);
+
+    // B asks for "latest unconsumed except mine" → null (only B's row exists)
+    const claimed = db.claimLatestUnconsumedResume("sess-B");
+    assert.equal(claimed, null);
+
+    // Row stays unconsumed, ready for the next fresh session to claim
+    const row = db.getResume("sess-B");
+    assert.equal(row!.consumed, 0);
+  });
+
+  test("returns another session's row even when the current session also has an unconsumed row", () => {
+    const db = createTestDB();
+    db.ensureSession("sess-A", "/p");
+    db.upsertResume("sess-A", "<snap>A</snap>", 3);
+    db.ensureSession("sess-B", "/p");
+    db.upsertResume("sess-B", "<snap>B</snap>", 4);
+
+    // B claims with self-exclusion → must get A's row, NOT its own
+    const claimed = db.claimLatestUnconsumedResume("sess-B");
+    assert.deepEqual(claimed, { sessionId: "sess-A", snapshot: "<snap>A</snap>" });
+
+    // B's own row still unconsumed (the next fresh session can grab it)
+    const bRow = db.getResume("sess-B");
+    assert.equal(bRow!.consumed, 0);
+  });
+});
+
+// ════════════════════════════════════════════
 // SLICE 13: DELETE SESSION
 // ════════════════════════════════════════════
 

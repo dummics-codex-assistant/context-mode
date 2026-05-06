@@ -100,10 +100,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     preToolUse: true,
     postToolUse: true,
     preCompact: true, // experimental
-    sessionStart: false,
+    sessionStart: true,
     canModifyArgs: true,
     canModifyOutput: true, // with TUI bug caveat for bash (#13575)
-    canInjectSessionContext: false,
+    canInjectSessionContext: true,
   };
 
   private platform: AdapterPlatformType;
@@ -233,14 +233,20 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
 
   private paths(): string[] {
     if (this.platform === "kilo") {
+      // Kilo runtime accepts `.kilo/`, `.kilocode/`, and `.opencode/` as
+      // project config dirs (refs/platforms/kilo/packages/opencode/src/
+      // kilocode/config/config.ts:50,408). Mirror that here so context-mode
+      // discovers config regardless of which suffix the user adopted.
       return [
         resolve("kilo.json"),
         resolve("kilo.jsonc"),
         resolve(".kilo", "kilo.json"),
         resolve(".kilo", "kilo.jsonc"),
+        resolve(".kilocode", "kilo.json"),
+        resolve(".kilocode", "kilo.jsonc"),
         join(homedir(), ".config", "kilo", "kilo.json"),
         join(homedir(), ".config", "kilo", "kilo.jsonc"),
-      ];  
+      ];
     }
     return [
       resolve("opencode.json"),
@@ -253,15 +259,29 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getSessionDir(): string {
-    let configDir: string;
-    if (process.platform === "win32") {
-      configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
-    } else {
-      configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-    }
-    const dir = join(configDir, this.platform, "context-mode", "sessions");
+    const dir = join(this.getConfigDir(), "context-mode", "sessions");
     mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  /**
+   * OpenCode/KiloCode honor XDG_CONFIG_HOME on POSIX and APPDATA on Windows.
+   * Falls back to ~/.config/<platform> (or %APPDATA%\<platform>).
+   * Always absolute. `_projectDir` is accepted for interface symmetry but
+   * unused — config is home/XDG-rooted, never project-scoped.
+   */
+  getConfigDir(_projectDir?: string): string {
+    let root: string;
+    if (process.platform === "win32") {
+      root = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    } else {
+      root = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    }
+    return join(root, this.platform);
+  }
+
+  getInstructionFiles(): string[] {
+    return ["AGENTS.md"];
   }
 
   generateHookConfig(_pluginRoot: string): HookRegistration {
@@ -388,12 +408,12 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       });
     }
 
-    // Warn about SessionStart limitation
+    // Note: SessionStart handled via experimental.chat.system.transform surrogate
     results.push({
       check: "SessionStart hook",
-      status: "warn",
+      status: "pass",
       message:
-        `SessionStart not supported in ${this.name} (see issues #14808, #5409)`,
+        `SessionStart via experimental.chat.system.transform surrogate (native hook pending #14808, #5409)`,
     });
 
     return results;

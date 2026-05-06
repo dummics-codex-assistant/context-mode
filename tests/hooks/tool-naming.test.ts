@@ -309,6 +309,23 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result!.additionalContext).not.toContain("mcp__");
   });
 
+  it("OpenClaw lowercase native tools route through canonical aliases", () => {
+    const exec = routePreToolUse("exec", { command: "ls" }, "/tmp", "openclaw");
+    expect(exec).not.toBeNull();
+    expect(exec!.action).toBe("context");
+    expect(exec!.additionalContext).toContain("ctx_batch_execute");
+
+    const read = routePreToolUse("read", { file_path: "/tmp/a.ts" }, "/tmp", "openclaw");
+    expect(read).not.toBeNull();
+    expect(read!.action).toBe("context");
+    expect(read!.additionalContext).toContain("ctx_execute_file");
+
+    const search = routePreToolUse("search", { pattern: "TODO" }, "/tmp", "openclaw");
+    expect(search).not.toBeNull();
+    expect(search!.action).toBe("context");
+    expect(search!.additionalContext).toContain("ctx_execute");
+  });
+
   it("build tool redirect uses platform tool names when platform=gemini-cli", () => {
     const result = routePreToolUse("Bash", { command: "./gradlew build" }, "/tmp", "gemini-cli");
     expect(result).not.toBeNull();
@@ -316,5 +333,92 @@ describe("routePreToolUse with platform parameter", () => {
     const cmd = (result!.updatedInput as Record<string, string>).command;
     expect(cmd).toContain("mcp__context-mode__ctx_execute");
     expect(cmd).not.toContain("mcp__plugin_context-mode_context-mode__");
+  });
+
+  // ─── SLICE Qwen-3: routing.mjs Qwen native names ───
+  describe("Qwen Code native tool names route through canonical aliases", () => {
+    it("run_shell_command + curl routes as Bash → modify (curl block)", () => {
+      const result = routePreToolUse(
+        "run_shell_command",
+        { command: "curl https://example.com" },
+        "/tmp",
+        "qwen-code",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toMatch(
+        /curl\/wget blocked|curl\/wget bloccato/,
+      );
+    });
+
+    it("web_fetch routes as WebFetch → deny", () => {
+      const result = routePreToolUse(
+        "web_fetch",
+        { url: "https://example.com" },
+        "/tmp",
+        "qwen-code",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toMatch(/WebFetch blocked|WebFetch bloccato/);
+    });
+
+    it("read_file routes as Read → context guidance", () => {
+      const result = routePreToolUse(
+        "read_file",
+        { file_path: "/tmp/a.ts" },
+        "/tmp",
+        "qwen-code",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
+      expect(result!.additionalContext).toContain("ctx_execute_file");
+    });
+
+    it("grep_search routes as Grep → context guidance", () => {
+      const result = routePreToolUse(
+        "grep_search",
+        { pattern: "TODO" },
+        "/tmp",
+        "qwen-code",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
+    });
+  });
+});
+
+// ─── SLICE Qwen-1: sessionstart platform-aware tool namer ───
+describe("sessionstart detectPlatformFromEnv", () => {
+  let detectPlatformFromEnv: (env?: Record<string, string | undefined>) => string;
+
+  beforeAll(async () => {
+    const mod = await import("../../hooks/core/platform-detect.mjs");
+    detectPlatformFromEnv = mod.detectPlatformFromEnv;
+  });
+
+  it("returns qwen-code when QWEN_PROJECT_DIR is set", () => {
+    expect(detectPlatformFromEnv({ QWEN_PROJECT_DIR: "/tmp/qwen" })).toBe("qwen-code");
+  });
+
+  // QWEN_SESSION_ID retracted in v1.0.107 — 0 hits in qwen-code source
+  // (verified Phase 7 against refs/platforms/qwen-code/). Only QWEN_PROJECT_DIR
+  // is set by the Qwen hook runner — see src/adapters/detect.ts:69 comment
+  // and refs/platforms/qwen-code/packages/core/src/hooks/hookRunner.ts SET site.
+  it("does NOT promote bare QWEN_SESSION_ID (fabrication retraction)", () => {
+    expect(detectPlatformFromEnv({ QWEN_SESSION_ID: "qwen-1" })).toBe("claude-code");
+  });
+
+  it("returns gemini-cli when GEMINI_PROJECT_DIR is set", () => {
+    expect(detectPlatformFromEnv({ GEMINI_PROJECT_DIR: "/tmp/g" })).toBe("gemini-cli");
+  });
+
+  it("falls back to claude-code when no env var is set", () => {
+    expect(detectPlatformFromEnv({})).toBe("claude-code");
+  });
+
+  it("Qwen-prefix MCP names are produced when platform=qwen-code", () => {
+    const namer = createToolNamer("qwen-code");
+    expect(namer("ctx_execute")).toBe("mcp__context-mode__ctx_execute");
   });
 });

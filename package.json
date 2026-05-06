@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.103",
+  "version": "1.0.111",
   "type": "module",
   "description": "Fork Codex-centric del plugin MCP context-mode: protegge la finestra di contesto con hook leggeri, esecuzione sandbox, knowledge base FTS5 e ricerca mirata.",
   "author": "Mert Koseoğlu",
@@ -63,12 +63,14 @@
     "insight/src",
     "server.bundle.mjs",
     "cli.bundle.mjs",
+    "bin",
     "skills",
     ".openclaw-plugin",
     ".mcp.json",
     "openclaw.plugin.json",
     "start.mjs",
     "scripts/postinstall.mjs",
+    "scripts/heal-better-sqlite3.mjs",
     "README.md",
     "LICENSE"
   ],

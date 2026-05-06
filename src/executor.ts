@@ -14,6 +14,51 @@ import type { ExecResult } from "./types.js";
 const isWin = process.platform === "win32";
 
 /**
+ * Pure helper: extension map for temp script files per language.
+ * On Windows, shell scripts usually get NO extension to avoid Windows
+ * file-association for `.sh` (which spawns a visible Git Bash window over the
+ * user's IDE). Windows PowerShell/pwsh is the exception because `-File`
+ * requires `.ps1` there.
+ */
+const SCRIPT_EXT: Record<Language, string> = {
+  javascript: "js",
+  typescript: "ts",
+  python: "py",
+  shell: "sh",
+  ruby: "rb",
+  go: "go",
+  rust: "rs",
+  php: "php",
+  perl: "pl",
+  r: "R",
+  elixir: "exs",
+};
+
+/** Pure helper — exported for unit testing. Returns "script" or "script.<ext>". */
+export function buildScriptFilename(
+  language: Language,
+  platform: NodeJS.Platform,
+  shellPath?: string | null,
+): string {
+  if (platform === "win32" && language === "shell") {
+    const shellName = shellPath?.toLowerCase() ?? "";
+    return shellName.includes("powershell") || shellName.includes("pwsh")
+      ? "script.ps1"
+      : "script";
+  }
+  return `script.${SCRIPT_EXT[language]}`;
+}
+
+/**
+ * Pure helper — exported for unit testing. Adds `windowsHide: true` on Windows
+ * to prevent the spawned shell from creating a visible console window that
+ * intercepts stdout (issue #384).
+ */
+export function buildSpawnOptions(platform: NodeJS.Platform): { windowsHide: boolean } {
+  return { windowsHide: platform === "win32" };
+}
+
+/**
  * Resolve the real OS temp directory, bypassing any TMPDIR env override.
  * os.tmpdir() reads TMPDIR from the environment, which some shells/tools
  * set to the project root — causing temp files to pollute the working tree.
@@ -60,7 +105,14 @@ interface ExecuteFileOptions extends ExecuteOptions {
 
 export class PolyglotExecutor {
   #hardCapBytes: number;
-  #projectRoot: string;
+  /**
+   * Resolves the project root on every access. Stored as a thunk so the
+   * executor stays in sync with server-side env-cascade resolvers (e.g.
+   * `getProjectDir` in server.ts) instead of capturing a snapshot of
+   * `CLAUDE_PROJECT_DIR` at construction time. String inputs are wrapped
+   * to preserve constructor backward compatibility.
+   */
+  #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
 
   /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
@@ -68,12 +120,23 @@ export class PolyglotExecutor {
 
   constructor(opts?: {
     hardCapBytes?: number;
-    projectRoot?: string;
+    projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
-    this.#projectRoot = opts?.projectRoot ?? process.cwd();
+    const pr = opts?.projectRoot;
+    if (typeof pr === "function") {
+      this.#projectRootResolver = pr;
+    } else if (typeof pr === "string") {
+      this.#projectRootResolver = () => pr;
+    } else {
+      this.#projectRootResolver = () => process.cwd();
+    }
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
+  }
+
+  get #projectRoot(): string {
+    return this.#projectRootResolver();
   }
 
   get runtimes(): RuntimeMap {
@@ -92,7 +155,7 @@ export class PolyglotExecutor {
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
-    const { language, code, timeout = 30_000, background = false } = opts;
+    const { language, code, timeout, background = false } = opts;
     const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-mode-"));
 
     try {
@@ -127,7 +190,7 @@ export class PolyglotExecutor {
   }
 
   async executeFile(opts: ExecuteFileOptions): Promise<ExecResult> {
-    const { path: filePath, language, code, timeout = 30_000 } = opts;
+    const { path: filePath, language, code, timeout } = opts;
     const absolutePath = resolve(this.#projectRoot, filePath);
     const wrappedCode = this.#wrapWithFileContent(
       absolutePath,
@@ -138,20 +201,6 @@ export class PolyglotExecutor {
   }
 
   #writeScript(tmpDir: string, code: string, language: Language): string {
-    const extMap: Record<Language, string> = {
-      javascript: "js",
-      typescript: "ts",
-      python: "py",
-      shell: "sh",
-      ruby: "rb",
-      go: "go",
-      rust: "rs",
-      php: "php",
-      perl: "pl",
-      r: "R",
-      elixir: "exs",
-    };
-
     // Go needs a main package wrapper if not present
     if (language === "go" && !code.includes("package ")) {
       code = `package main\n\nimport "fmt"\n\nfunc main() {\n${code}\n}\n`;
@@ -168,7 +217,14 @@ export class PolyglotExecutor {
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
-    const fp = join(tmpDir, `script.${extMap[language]}`);
+    const fp = join(
+      tmpDir,
+      buildScriptFilename(
+        language,
+        process.platform,
+        language === "shell" ? this.#runtimes.shell : null,
+      ),
+    );
     if (language === "shell") {
       writeFileSync(fp, code, { encoding: "utf-8", mode: 0o700 });
     } else {
@@ -180,16 +236,18 @@ export class PolyglotExecutor {
   async #compileAndRun(
     srcPath: string,
     cwd: string,
-    timeout: number,
+    timeout: number | undefined,
   ): Promise<ExecResult> {
     const binSuffix = isWin ? ".exe" : "";
     const binPath = srcPath.replace(/\.rs$/, "") + binSuffix;
 
-    // Compile
+    // Compile — cap rustc invocation at 60s when caller didn't bound the
+    // overall timeout (a hung compile shouldn't run forever even if the
+    // caller is fine with a long-running binary afterwards).
     try {
       execFileSync("rustc", [srcPath, "-o", binPath], {
         cwd,
-        timeout: Math.min(timeout, 60_000),
+        timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -211,7 +269,7 @@ export class PolyglotExecutor {
     cmd: string[],
     cwd: string,
     sandboxTmpDir: string,
-    timeout: number,
+    timeout: number | undefined,
     background = false,
   ): Promise<ExecResult> {
     return new Promise((res) => {
@@ -240,11 +298,21 @@ export class PolyglotExecutor {
         shell: needsShell,
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
+        // Hide the spawned-process console window on Windows. Without this,
+        // child_process.spawn creates a visible window that intercepts stdout,
+        // leaving the MCP response empty and popping a Git Bash terminal over
+        // the user's IDE. Issue #384.
+        ...buildSpawnOptions(process.platform),
       });
 
       let timedOut = false;
       let resolved = false;
-      const timer = setTimeout(() => {
+      // Issue #406 — if the caller didn't pass a timeout we don't fire one.
+      // Timeout policy belongs to the MCP host/client (Claude Code, VSCode,
+      // JetBrains all enforce their own RPC timeouts); imposing a second
+      // policy here turned 30-minute Gradle/Maven/SBT builds into spurious
+      // false negatives whenever the caller forgot the explicit value.
+      const timer: NodeJS.Timeout | undefined = timeout === undefined ? undefined : setTimeout(() => {
         timedOut = true;
         if (background) {
           // Background mode: detach process, return partial output, keep running
