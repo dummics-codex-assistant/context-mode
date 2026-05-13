@@ -9,15 +9,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
 process.chdir(__dirname);
 
-if (!process.env.CLAUDE_PROJECT_DIR) {
-  process.env.CLAUDE_PROJECT_DIR = originalCwd;
+// Plugin-install-path guard (mirror of src/util/project-dir.ts isPluginInstallPath
+// — duplicated here because start.mjs ships as raw JS and cannot import TS).
+// When Claude Code runs `/ctx-upgrade` it kills + respawns the MCP server with
+// `cwd` pointing at the plugin install dir. Setting CLAUDE_PROJECT_DIR from
+// that path then poisons every downstream ctx_stats / SessionDB / hash
+// computation — sessions silently re-root under the plugin install dir. Skip
+// the env auto-set in that case; getProjectDir() defends a second time inside
+// server.ts via resolveProjectDir(). See src/util/project-dir.ts.
+const isPluginInstallPath = (p) =>
+  /[/\\]\.claude[/\\]plugins[/\\](cache|marketplaces)[/\\]/.test(p);
+const safeOriginalCwd = isPluginInstallPath(originalCwd) ? null : originalCwd;
+
+if (!process.env.CLAUDE_PROJECT_DIR && safeOriginalCwd) {
+  process.env.CLAUDE_PROJECT_DIR = safeOriginalCwd;
 }
 
 // Platform-agnostic project dir — guaranteed to be set for ALL platforms.
 // Adapters may set their own env var (GEMINI_PROJECT_DIR, etc.) but this
 // is the universal fallback so server.ts getProjectDir() never relies on cwd().
-if (!process.env.CONTEXT_MODE_PROJECT_DIR) {
-  process.env.CONTEXT_MODE_PROJECT_DIR = originalCwd;
+if (!process.env.CONTEXT_MODE_PROJECT_DIR && safeOriginalCwd) {
+  process.env.CONTEXT_MODE_PROJECT_DIR = safeOriginalCwd;
 }
 
 // Routing instructions file auto-write DISABLED for all platforms (#158, #164).
@@ -95,6 +107,72 @@ if (cacheMatch) {
     /* best effort — don't block server startup */
   }
 }
+
+// ── Self-heal Layer 3 + 4: installed_plugins.json registry repair ──
+// v1.0.113 hotfix follow-up. /ctx-upgrade can leave installed_plugins.json
+// with two distinct kinds of poison:
+//   HEAL 3: per-entry `version` drifts away from the actual cache dir's
+//           plugin.json `version` field. Claude Code's plugin loader then
+//           rejects the entry as a manifest mismatch and silently
+//           disconnects context-mode.
+//   HEAL 4: top-level `enabledPlugins[<key>]` is missing or emptied.
+//           Claude Code skips disabled plugins, so MCP never starts and
+//           the user has no /ctx-upgrade escape hatch.
+// Logic is shared verbatim with scripts/postinstall.mjs (single source of
+// truth) so users who fix themselves via `npm install -g context-mode`
+// follow the exact same code path. Best-effort, never blocks MCP boot.
+try {
+  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
+    await import("./scripts/heal-installed-plugins.mjs");
+  const pluginKey = "context-mode@context-mode";
+  const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+  const pluginCacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
+  catch { /* best effort */ }
+  // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
+  // (NOT installed_plugins.json) — heal that one too so /ctx-upgrade-induced
+  // disable state is repaired before next /reload-plugins.
+  try { healSettingsEnabledPlugins({ settingsPath, pluginKey }); }
+  catch { /* best effort */ }
+  // v1.0.119 — Layer 5b (Issue #523): heal .claude-plugin/plugin.json's
+  // mcpServers["context-mode"].args[0] when /ctx-upgrade left a tmpdir-prefixed
+  // path baked in. Iterates EVERY installed cache entry's installPath so
+  // multi-version installs all self-recover. Each call is independently wrapped
+  // because one poisoned entry must not block heals on the others. Best effort.
+  //
+  // v1.0.122 — Layer 5b extended (Issue #531): asymmetric-heal sibling for the
+  // `.mcp.json` file Claude Code reads at plugin load. Same per-entry loop, same
+  // defensive wrap. Covers both the #253/aea633c bare `./start.mjs` fresh-install
+  // regression AND the /ctx-upgrade tmpdir leak class. Both heals must run on
+  // every boot so users self-recover regardless of which drift shape hit them.
+  try {
+    if (existsSync(registryPath)) {
+      const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
+      const entries = (ip && ip.plugins && ip.plugins[pluginKey]) || [];
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const installPath = entry && entry.installPath;
+          if (typeof installPath !== "string" || !installPath) continue;
+          try {
+            healPluginJsonMcpServers({
+              pluginRoot: installPath,
+              pluginCacheRoot,
+              pluginKey,
+            });
+          } catch { /* best effort — per-entry */ }
+          try {
+            healMcpJsonArgs({
+              pluginRoot: installPath,
+              pluginCacheRoot,
+              pluginKey,
+            });
+          } catch { /* best effort — per-entry */ }
+        }
+      }
+    }
+  } catch { /* best effort */ }
+} catch { /* best effort — never block MCP boot */ }
 
 // ── Self-heal Layer 4: Deploy global SessionStart hook + register in settings.json ──
 // This hook lives outside the plugin directory (~/.claude/hooks/) so it works
@@ -245,6 +323,43 @@ if (!existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__di
   const shimPath = resolve(__dirname, "cli.bundle.mjs");
   writeFileSync(shimPath, '#!/usr/bin/env node\nawait import("./build/cli.js");\n');
   if (process.platform !== "win32") chmodSync(shimPath, 0o755);
+}
+
+// ── Algo-D4: plugin cache integrity check ──
+// Verify boot-critical siblings exist BEFORE importing server.bundle.mjs.
+// Without this, a partial install (#550) gives an opaque downstream
+// stack trace from `import("./server.bundle.mjs")`. With it, we emit a
+// structured CONTEXT_MODE_PARTIAL_INSTALL stderr block + exit 2 so
+// external monitoring grep + the user both see the actionable signal.
+//
+// Runs AFTER the heal layers above so missing files they can fix
+// (cli.bundle.mjs shim, dangling symlinks) get a chance first. Helper
+// is shared with `ctx doctor` (Algo-D5) — single source of truth so
+// boot + diagnostic agree byte-for-byte. Skipped under VITEST so the
+// repo's own test invocations against in-tree start.mjs don't fail
+// when running before `npm run build` produces the bundles.
+if (!process.env.VITEST) {
+  try {
+    const { assertPluginCacheIntegrity, formatPartialInstallReport } =
+      await import("./scripts/plugin-cache-integrity.mjs");
+    const integrity = assertPluginCacheIntegrity({ pluginRoot: __dirname });
+    if (!integrity.ok) {
+      process.stderr.write(
+        formatPartialInstallReport({
+          pluginRoot: __dirname,
+          missing: integrity.missing,
+        }),
+      );
+      process.exit(2);
+    }
+  } catch (err) {
+    // The helper itself failing is unexpected — keep boot moving rather
+    // than blocking on a check infrastructure bug. The downstream
+    // import will still surface the actual missing-bundle error.
+    if (process.env.CONTEXT_MODE_DEBUG) {
+      process.stderr.write(`[start.mjs] integrity check skipped: ${err}\n`);
+    }
+  }
 }
 
 // Bundle exists (CI-built) — start instantly

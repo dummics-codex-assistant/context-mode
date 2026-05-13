@@ -55,6 +55,56 @@ describe("File Events", () => {
     assert.equal(events[0].category, "file");
     assert.equal(events[0].priority, 1);
   });
+
+  test("extracts file_write and file_edit from Codex apply_patch hunks", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/new-file.ts",
+          "+export const created = true;",
+          "*** Update File: src/existing.ts",
+          "@@",
+          "-export const before = true;",
+          "+export const after = true;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const fileWrites = events.filter(e => e.type === "file_write");
+    const fileEdits = events.filter(e => e.type === "file_edit");
+    assert.equal(fileWrites.length, 1);
+    assert.equal(fileWrites[0].data, "src/new-file.ts");
+    assert.equal(fileEdits.length, 1);
+    assert.equal(fileEdits[0].data, "src/existing.ts");
+  });
+
+  test("extracts moved target path from Codex apply_patch", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: src/old-name.ts",
+          "*** Move to: src/new-name.ts",
+          "@@",
+          "-export const value = 1;",
+          "+export const value = 2;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const fileEdits = events.filter(e => e.type === "file_edit").map(e => e.data);
+    assert.ok(fileEdits.includes("src/old-name.ts"));
+    assert.ok(fileEdits.includes("src/new-name.ts"));
+  });
 });
 
 // ════════════════════════════════════════════
@@ -420,6 +470,53 @@ describe("Plan Mode Events", () => {
     assert.equal(planEvents[0].type, "plan_file_write");
   });
 
+  test("extracts plan_file_write from relative apply_patch updates to .claude/plans/", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: .claude/plans/my-plan.md",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const planEvents = events.filter(e => e.category === "plan");
+    assert.equal(planEvents.length, 1);
+    assert.equal(planEvents[0].type, "plan_file_write");
+    assert.ok(planEvents[0].data.includes("my-plan.md"));
+  });
+
+  test("does not extract file continuity events from failed apply_patch", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/failed.ts",
+          "+export const failed = true;",
+          "*** Update File: src/existing.ts",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.filter(e => e.type === "file_write").length, 0);
+    assert.equal(events.filter(e => e.type === "file_edit").length, 0);
+  });
+
   test("does not extract plan event from Write to non-plan path", () => {
     const input = {
       tool_name: "Write",
@@ -457,8 +554,10 @@ describe("Decision Events", () => {
     assert.ok(decisionEvents[0].data.includes("ctx-"));
   });
 
-  test("extracts decision from 'always/never' directives", () => {
-    const events = extractUserEvents("never push to main without asking me first");
+  test("extracts decision from a negation+alternative correction", () => {
+    // Universal-rule detector (issue #535) treats a clause-separated
+    // non-question message in the corrective length range as a decision.
+    const events = extractUserEvents("never push to main, ask me first");
     const decisionEvents = events.filter(e => e.type === "decision");
     assert.equal(decisionEvents.length, 1);
   });
@@ -688,19 +787,13 @@ describe("Intent Events", () => {
     assert.equal(intentEvents[0].data, "implement");
   });
 
-  test("extracts review intent", () => {
-    const events = extractUserEvents("Review this code and check for security issues");
-    const intentEvents = events.filter(e => e.type === "intent");
-    assert.equal(intentEvents.length, 1);
-    assert.equal(intentEvents[0].data, "review");
-  });
-
-  test("extracts discussion intent", () => {
-    const events = extractUserEvents("Think about the pros and cons of this approach");
-    const intentEvents = events.filter(e => e.type === "intent");
-    assert.equal(intentEvents.length, 1);
-    assert.equal(intentEvents[0].data, "discuss");
-  });
+  // The `review` and `discuss` modes were keyword-only and could not be
+  // expressed as a robust universal-rule detector (issue #535). They are
+  // intentionally dropped from the intent schema — the renderer now
+  // surfaces the raw user message via <recent_user_messages> so the
+  // next LLM can still distinguish review/discuss tone end-to-end.
+  // The pie-chart in insight/server.mjs degrades gracefully when these
+  // modes are absent.
 });
 
 // ════════════════════════════════════════════
@@ -2063,6 +2156,87 @@ describe("Error Resolution Events", () => {
     assert.equal(resolved.length, 1, "Write after Read error should resolve");
   });
 
+  test("emits error_resolved when apply_patch follows Read error", () => {
+    resetErrorResolutionState();
+
+    const readError = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    };
+    extractEvents(readError);
+
+    const patchFix = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/missing.ts",
+          "+export {};",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+    const fixEvents = extractEvents(patchFix);
+    const resolved = fixEvents.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 1, "apply_patch after Read error should resolve");
+  });
+
+  test("does not emit error_resolved when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    extractEvents({
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    });
+
+    const fixEvents = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/missing.ts",
+          "+export {};",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(
+      fixEvents.filter(e => e.type === "error_resolved").length,
+      0,
+      "failed apply_patch should not resolve a prior Read error",
+    );
+  });
+
+  test("does not emit plan_file_write when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    const events = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: .claude/plans/bad-plan.md",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(events.filter(e => e.type === "plan_file_write").length, 0);
+  });
+
   test("does not emit error_resolved for unrelated tool after error", () => {
     resetErrorResolutionState();
 
@@ -2310,95 +2484,60 @@ describe("Iteration Loop Events", () => {
 // ════════════════════════════════════════════
 
 describe("Blocked-On Events", () => {
-  test("extracts blocker from 'blocked on' pattern", () => {
-    const events = extractUserEvents("I'm blocked on the API key from DevOps");
+  // Migrated to universal-rule detectors (issue #535). The old English
+  // and Turkish keyword fixtures ("blocked on", "waiting for",
+  // "bekliyor", "unblocked", ...) are intentionally no longer matched —
+  // the universal-rule design relies on language-neutral
+  // programming-domain markers (Error: / Exception: / Traceback / stack
+  // frames) and Unicode checkmark / "fixed:" / "resolved:" prefixes.
+  // For raw-message preservation see the <recent_user_messages>
+  // safety-net section in tests/session/extract-multilang.test.ts.
+
+  test("extracts blocker from 'Error:' programming-domain marker", () => {
+    const events = extractUserEvents("Error: cannot read property of undefined");
     const blockerEvents = events.filter(e => e.type === "blocker");
     assert.equal(blockerEvents.length, 1);
     assert.equal(blockerEvents[0].category, "blocked-on");
     assert.equal(blockerEvents[0].priority, 2);
-    assert.ok(blockerEvents[0].data.includes("API key"));
+    assert.ok(blockerEvents[0].data.includes("cannot read property"));
   });
 
-  test("extracts blocker from 'waiting for' pattern", () => {
-    const events = extractUserEvents("waiting for the design review to finish");
+  test("extracts blocker from 'Exception:' marker", () => {
+    const events = extractUserEvents("Exception: NullPointerException at line 42");
     const blockerEvents = events.filter(e => e.type === "blocker");
     assert.equal(blockerEvents.length, 1);
     assert.equal(blockerEvents[0].category, "blocked-on");
   });
 
-  test("extracts blocker from 'need X before' pattern", () => {
-    const events = extractUserEvents("need approval before we can deploy");
+  test("extracts blocker from Python 'Traceback' marker", () => {
+    const events = extractUserEvents("Traceback (most recent call last):");
     const blockerEvents = events.filter(e => e.type === "blocker");
     assert.equal(blockerEvents.length, 1);
   });
 
-  test("extracts blocker from 'can't proceed until' pattern", () => {
-    const events = extractUserEvents("can't proceed until the migration is done");
-    const blockerEvents = events.filter(e => e.type === "blocker");
-    assert.equal(blockerEvents.length, 1);
-  });
-
-  test("extracts blocker from 'depends on' pattern", () => {
-    const events = extractUserEvents("this depends on the auth service being up");
-    const blockerEvents = events.filter(e => e.type === "blocker");
-    assert.equal(blockerEvents.length, 1);
-  });
-
-  test("extracts blocker from bare 'blocked' pattern", () => {
-    const events = extractUserEvents("we're blocked, CI is failing");
-    const blockerEvents = events.filter(e => e.type === "blocker");
-    assert.equal(blockerEvents.length, 1);
-  });
-
-  test("extracts blocker from Turkish 'bekliyor' pattern", () => {
-    const events = extractUserEvents("deployment bekliyor, önce review lazım");
-    const blockerEvents = events.filter(e => e.type === "blocker");
-    assert.equal(blockerEvents.length, 1);
-  });
-
-  test("extracts blocker from Turkish 'bekliyorum' pattern", () => {
-    const events = extractUserEvents("API anahtarını bekliyorum");
-    const blockerEvents = events.filter(e => e.type === "blocker");
-    assert.equal(blockerEvents.length, 1);
-  });
-
-  // Resolution tests
-
-  test("extracts blocker_resolved from 'unblocked' pattern", () => {
-    const events = extractUserEvents("we're unblocked now, got the credentials");
+  test("extracts blocker_resolved from Unicode checkmark", () => {
+    const events = extractUserEvents("✅ unblocked now, got the credentials");
     const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
     assert.equal(resolvedEvents.length, 1);
     assert.equal(resolvedEvents[0].category, "blocked-on");
     assert.equal(resolvedEvents[0].priority, 2);
   });
 
-  test("extracts blocker_resolved from 'resolved' pattern", () => {
-    const events = extractUserEvents("the issue is resolved, we can continue");
+  test("extracts blocker_resolved from 'fixed:' marker prefix", () => {
+    const events = extractUserEvents("fixed: the cache miss in dev");
     const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
     assert.equal(resolvedEvents.length, 1);
   });
 
-  test("extracts blocker_resolved from 'got the X' pattern", () => {
-    const events = extractUserEvents("got the API key, let's go");
+  test("extracts blocker_resolved from 'resolved:' marker prefix", () => {
+    const events = extractUserEvents("resolved: deploy queue cleared");
     const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
     assert.equal(resolvedEvents.length, 1);
   });
 
-  test("extracts blocker_resolved from 'is ready now' pattern", () => {
-    const events = extractUserEvents("the staging environment is ready now");
-    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
-    assert.equal(resolvedEvents.length, 1);
-  });
-
-  test("extracts blocker_resolved from 'can proceed' pattern", () => {
-    const events = extractUserEvents("we can proceed with the deployment");
-    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
-    assert.equal(resolvedEvents.length, 1);
-  });
-
-  test("resolution takes priority over blocker when both match", () => {
-    // "resolved" matches resolution, "blocked" matches blocker — resolution wins
-    const events = extractUserEvents("the blocked issue is now resolved");
+  test("resolution takes priority over blocker when both shapes match", () => {
+    // checkmark wins over Error: marker in the same message
+    const events = extractUserEvents("✅ Error: was a stale build, fixed it");
     const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
     const blockerEvents = events.filter(e => e.type === "blocker");
     assert.equal(resolvedEvents.length, 1, "should emit resolved");

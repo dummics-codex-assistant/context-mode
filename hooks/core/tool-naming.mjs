@@ -15,6 +15,7 @@
  */
 
 const TOOL_PREFIXES = {
+  "claude-code":    (tool) => `mcp__plugin_context-mode_context-mode__${tool}`,
   "gemini-cli":     (tool) => `mcp__context-mode__${tool}`,
   "antigravity":    (tool) => `mcp__context-mode__${tool}`,
   "opencode":       (tool) => `context-mode_${tool}`,

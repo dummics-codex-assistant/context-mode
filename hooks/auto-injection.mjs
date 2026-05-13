@@ -6,9 +6,10 @@
  *
  * Priority order:
  *   P1: Role (behavioral_directive) — always first, never truncated
- *   P2: Decisions (rules) — latest 5, overflow reduces to 3
- *   P3: Skills (active_skills) — unique names, latest 10
- *   P4: Intent (session_mode) — latest
+ *   P2: Session notes — latest 8 fragile continuity details
+ *   P3: Decisions (rules) — latest 5, overflow reduces to 3
+ *   P4: Skills (active_skills) — unique names, latest 10
+ *   P5: Intent (session_mode) — latest
  *
  * Hard cap: 500 tokens (~2000 chars at 4 chars/token).
  */
@@ -33,6 +34,7 @@ export function buildAutoInjection(events) {
   // walked the array 4 times per prompt — wasteful on macOS, painful on Windows
   // where V8 cold paths cost more.
   let role;
+  const sessionNotesAll = [];
   const decisionsAll = [];
   const skillsSeen = new Set();
   const skillsOrdered = [];
@@ -41,6 +43,9 @@ export function buildAutoInjection(events) {
     switch (e.category) {
       case "role":
         role = e;
+        break;
+      case "session-note":
+        sessionNotesAll.push(e);
         break;
       case "decision":
         decisionsAll.push(e);
@@ -67,7 +72,24 @@ export function buildAutoInjection(events) {
     budget -= estimateTokens(text);
   }
 
-  // P2: Decisions (latest 5)
+  // P2: Session notes (latest 8)
+  const sessionNotes = sessionNotesAll.slice(-8);
+  if (sessionNotes.length > 0 && budget > 80) {
+    const lines = sessionNotes.map(n => `- ${n.data.slice(0, 180)}`).join("\n");
+    const text = `<session_notes>\nFragile operational details from this session:\n${lines}\n</session_notes>`;
+    const cost = estimateTokens(text);
+    if (cost <= budget) {
+      parts.push(text);
+      budget -= cost;
+    } else {
+      const reduced = sessionNotes.slice(-4).map(n => `- ${n.data.slice(0, 140)}`).join("\n");
+      const fallback = `<session_notes>\nFragile operational details from this session:\n${reduced}\n</session_notes>`;
+      parts.push(fallback);
+      budget -= estimateTokens(fallback);
+    }
+  }
+
+  // P3: Decisions (latest 5)
   const decisions = decisionsAll.slice(-5);
   if (decisions.length > 0) {
     const lines = decisions.map(d => `- ${d.data.slice(0, 100)}`).join("\n");
@@ -85,14 +107,14 @@ export function buildAutoInjection(events) {
     }
   }
 
-  // P3: Skills (unique names, latest 10)
+  // P4: Skills (unique names, latest 10)
   if (skillsOrdered.length > 0 && budget > 50) {
     const text = `<active_skills>\nRe-invoke if relevant: ${skillsOrdered.slice(-10).join(", ")}\nTo reload: call the Skill tool with the skill name.\n</active_skills>`;
     parts.push(text);
     budget -= estimateTokens(text);
   }
 
-  // P4: Intent (latest)
+  // P5: Intent (latest)
   if (intent && budget > 20) {
     parts.push(`<session_mode>${intent.data}</session_mode>`);
   }

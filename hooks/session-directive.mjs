@@ -110,6 +110,13 @@ export function writeSessionEventsFile(events, eventsPath) {
     lines.push("");
   }
 
+  if (grouped["session-note"]?.length > 0) {
+    lines.push("## Session Notes");
+    lines.push("");
+    for (const ev of grouped["session-note"]) lines.push(`- ${ev.data}`);
+    lines.push("");
+  }
+
   if (grouped.git?.length > 0) {
     lines.push("## Git Operations");
     lines.push("");
@@ -275,6 +282,16 @@ export function buildSessionDirective(source, eventMeta, toolNamer) {
     block += `\n## Key Decisions`;
     for (const ev of grouped.decision) {
       const text = ev.data.length > 150 ? ev.data.substring(0, 147) + "..." : ev.data;
+      block += `\n- ${text}`;
+    }
+    block += `\n`;
+  }
+
+  // 3b. Session notes — fragile operational details, not durable memory
+  if (grouped["session-note"]?.length > 0) {
+    block += `\n## Session Notes`;
+    for (const ev of grouped["session-note"].slice(-8)) {
+      const text = ev.data.length > 220 ? ev.data.substring(0, 217) + "..." : ev.data;
       block += `\n- ${text}`;
     }
     block += `\n`;

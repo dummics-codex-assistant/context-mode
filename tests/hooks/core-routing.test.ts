@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from
 import { spawn } from "node:child_process";
 import {
   writeFileSync,
+  mkdirSync,
   unlinkSync,
   existsSync,
   readdirSync,
@@ -23,8 +24,6 @@ let routePreToolUse: (
   toolName: string,
   toolInput: Record<string, unknown>,
   projectDir?: string,
-  platform?: string,
-  sessionId?: string,
 ) => {
   action: string;
   reason?: string;
@@ -32,7 +31,8 @@ let routePreToolUse: (
   additionalContext?: string;
 } | null;
 
-let resetGuidanceThrottle: (sessionId?: string) => void;
+let resetGuidanceThrottle: () => void;
+let initSecurity: (buildDir: string) => Promise<boolean>;
 let ROUTING_BLOCK: string;
 let createRoutingBlock: (t: any, options?: { includeCommands?: boolean }) => string;
 let READ_GUIDANCE: string;
@@ -42,6 +42,7 @@ beforeAll(async () => {
   const mod = await import("../../hooks/core/routing.mjs");
   routePreToolUse = mod.routePreToolUse;
   resetGuidanceThrottle = mod.resetGuidanceThrottle;
+  initSecurity = mod.initSecurity;
 
   const constants = await import("../../hooks/routing-block.mjs");
   ROUTING_BLOCK = constants.ROUTING_BLOCK;
@@ -86,21 +87,8 @@ describe("routePreToolUse", () => {
       expect(result!.action).toBe("modify");
       expect(result!.updatedInput).toBeDefined();
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget bloccato",
+        "curl/wget blocked",
       );
-    });
-
-    it("denies curl commands on Codex because Codex cannot rewrite tool input", () => {
-      const result = routePreToolUse(
-        "Bash",
-        { command: "curl https://example.com" },
-        "/tmp",
-        "codex",
-      );
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("curl/wget bloccato");
-      expect(result!.reason).toContain("ctx_execute");
     });
 
     it("denies wget commands with modify action", () => {
@@ -110,7 +98,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget bloccato",
+        "curl/wget blocked",
       );
     });
 
@@ -190,7 +178,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "HTTP inline bloccato",
+        "Inline HTTP blocked",
       );
     });
 
@@ -201,23 +189,23 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "HTTP inline bloccato",
+        "Inline HTTP blocked",
       );
     });
 
-    it("allows git status with BASH_GUIDANCE context", () => {
+    it("git status — bypassed by structurally-bounded allowlist (#463)", () => {
+      // Pre-#463: this returned BASH_GUIDANCE context. The #463 allowlist
+      // now short-circuits the nudge for read-only git subcommands so the
+      // guidance reads as signal, not noise.
       const result = routePreToolUse("Bash", { command: "git status" });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
-      expect(result!.additionalContext).toBeDefined();
+      expect(result).toBeNull();
     });
 
-    it("allows mkdir with BASH_GUIDANCE context", () => {
+    it("mkdir — bypassed by structurally-bounded allowlist (#463)", () => {
       const result = routePreToolUse("Bash", {
         command: "mkdir -p /tmp/test-dir",
       });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
+      expect(result).toBeNull();
     });
 
     it("allows npm install with BASH_GUIDANCE context", () => {
@@ -233,7 +221,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "build tool reindirizzato",
+        "Build tool redirected",
       );
     });
 
@@ -262,8 +250,12 @@ describe("routePreToolUse", () => {
     });
 
     it("does not false-positive on gradle in quoted text", () => {
+      // Use a command whose first word is NOT in the #463 structurally-bounded
+      // allowlist (`echo` is allowlisted), so we still exercise the
+      // strip-quotes-then-match-gradle path. The intent is to prove the
+      // gradle build-tool redirect doesn't fire on quoted occurrences.
       const result = routePreToolUse("Bash", {
-        command: 'echo "run gradle build to compile"',
+        command: 'find . -name "run gradle build to compile"',
       });
       expect(result).not.toBeNull();
       // stripped version removes quoted content → no gradle match → context
@@ -277,8 +269,8 @@ describe("routePreToolUse", () => {
       });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toMatch(
-        /Build tool redirected|build tool reindirizzato/,
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "Build tool redirected",
       );
     });
 
@@ -297,251 +289,6 @@ describe("routePreToolUse", () => {
       const r2 = routePreToolUse("Bash", { command: "echo mvnDocker-image" });
       // Quoted/echo passes context, not modify
       expect(r2?.action).not.toBe("modify");
-    });
-
-    it("redirects recursive listings to ctx_execute", () => {
-      const result = routePreToolUse("Bash", {
-        command: "Get-ChildItem -Recurse",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "listing ricorsivo",
-      );
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "ctx_execute",
-      );
-    });
-
-    it("redirects unbounded GitHub Actions logs to ctx_execute", () => {
-      const result = routePreToolUse("Bash", {
-        command: "gh run view 123 --log",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "log non limitato",
-      );
-    });
-
-    it("redirects unbounded git log but allows bounded history", () => {
-      const unbounded = routePreToolUse("Bash", { command: "git log" });
-      expect(unbounded).not.toBeNull();
-      expect(unbounded!.action).toBe("modify");
-      expect((unbounded!.updatedInput as Record<string, string>).command).toContain(
-        "storia git non limitata",
-      );
-
-      resetGuidanceThrottle();
-      const bounded = routePreToolUse("Bash", {
-        command: "git log --oneline --max-count 20",
-      });
-      expect(bounded).not.toBeNull();
-      expect(bounded!.action).toBe("context");
-    });
-
-    it("redirects unbounded git diff but allows diff summaries", () => {
-      const unbounded = routePreToolUse("Bash", { command: "git diff" });
-      expect(unbounded).not.toBeNull();
-      expect(unbounded!.action).toBe("modify");
-      expect((unbounded!.updatedInput as Record<string, string>).command).toContain(
-        "diff git completo",
-      );
-
-      resetGuidanceThrottle();
-      const stat = routePreToolUse("Bash", { command: "git diff --stat" });
-      expect(stat).not.toBeNull();
-      expect(stat!.action).toBe("context");
-    });
-
-    it("redirects unbounded test runners to ctx_execute", () => {
-      const result = routePreToolUse("Bash", { command: "npm test" });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "test runner non limitato",
-      );
-    });
-
-    it("denies unbounded test runners on Codex because guidance-only redirects are ignored", () => {
-      const result = routePreToolUse(
-        "Bash",
-        { command: "npm test" },
-        "/tmp",
-        "codex",
-      );
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("test runner non limitato");
-      expect(result!.reason).toContain("ctx_execute");
-    });
-
-    it("keeps Codex in MCP-required retrieval mode for unbounded retry after a noisy deny", () => {
-      const sessionId = "sticky-codex-test";
-      resetGuidanceThrottle(sessionId);
-      const first = routePreToolUse(
-        "Bash",
-        { command: "rg TODO" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(first).not.toBeNull();
-      expect(first!.action).toBe("deny");
-      expect(first!.reason).toContain("ricerca testuale non limitata");
-
-      const fallback = routePreToolUse(
-        "Bash",
-        { command: "Get-Content hooks/core/routing.mjs" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(fallback).not.toBeNull();
-      expect(fallback!.action).toBe("deny");
-      expect(fallback!.reason).toContain("retrieval MCP richiesto");
-      expect(fallback!.reason).toContain("ctx_batch_execute");
-      expect(fallback!.reason).toContain("ctx_search");
-      expect(fallback!.reason).toContain("shell tipo sh/POSIX");
-      expect(fallback!.reason).toContain("evita PowerShell");
-      expect(fallback!.reason).toContain("pwd");
-      expect(fallback!.reason).toContain("head -200");
-      expect(fallback!.reason).toContain("Evita scansioni enormi");
-      expect(fallback!.reason).toContain("shortlist");
-    });
-
-    it("uses compact guidance for repeated Codex MCP-required retrieval blocks", () => {
-      const sessionId = "sticky-codex-repeat-test";
-      resetGuidanceThrottle(sessionId);
-      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
-      routePreToolUse("Bash", { command: "Get-Content hooks/core/routing.mjs" }, "/tmp", "codex", sessionId);
-
-      const repeated = routePreToolUse(
-        "Bash",
-        { command: "Select-String -Path hooks/core/routing.mjs -Pattern TODO" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(repeated).not.toBeNull();
-      expect(repeated!.action).toBe("deny");
-      expect(repeated!.reason).toContain("ancora richiesto");
-      expect(repeated!.reason).toContain("shell bounded esplicita");
-      expect(repeated!.reason).not.toContain("Evita scansioni enormi");
-    });
-
-    it("allows bounded retrieval shell after Codex enters MCP-required mode", () => {
-      const sessionId = "sticky-codex-bounded-shell-test";
-      resetGuidanceThrottle(sessionId);
-      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
-
-      const bounded = routePreToolUse(
-        "Bash",
-        { command: "Get-Content hooks/core/routing.mjs | Select-Object -First 40" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(bounded).not.toBeNull();
-      expect(bounded!.action).toBe("context");
-      expect(bounded!.additionalContext).toContain("comando e' bounded");
-    });
-
-    it("clears Codex MCP-required retrieval mode after a context-mode tool call", () => {
-      const sessionId = "sticky-codex-clear-test";
-      resetGuidanceThrottle(sessionId);
-      const first = routePreToolUse(
-        "Bash",
-        { command: "rg TODO" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(first).not.toBeNull();
-      expect(first!.action).toBe("deny");
-
-      const mcp = routePreToolUse(
-        "mcp__context_mode__ctx_batch_execute",
-        { commands: [], queries: [] },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(mcp).toBeNull();
-
-      const targetedRead = routePreToolUse(
-        "Bash",
-        { command: "Get-Content hooks/core/routing.mjs" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(targetedRead?.action).not.toBe("deny");
-      expect(targetedRead!.reason ?? targetedRead!.additionalContext ?? "").not.toContain(
-        "retrieval MCP richiesto",
-      );
-    });
-
-    it("recognizes bare ctx_search as a context-mode tool for Codex sticky mode", () => {
-      const sessionId = "sticky-codex-clear-bare-test";
-      resetGuidanceThrottle(sessionId);
-      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
-
-      expect(
-        routePreToolUse("ctx_search", { queries: ["routing"] }, "/tmp", "codex", sessionId),
-      ).toBeNull();
-
-      const result = routePreToolUse(
-        "Bash",
-        { command: "Get-Content hooks/core/routing.mjs" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(result?.action).not.toBe("deny");
-    });
-
-    it("does not block non-retrieval shell after Codex enters MCP-required mode", () => {
-      const sessionId = "sticky-codex-safe-shell-test";
-      resetGuidanceThrottle(sessionId);
-      routePreToolUse("Bash", { command: "rg TODO" }, "/tmp", "codex", sessionId);
-
-      const result = routePreToolUse(
-        "Bash",
-        { command: "git status --short" },
-        "/tmp",
-        "codex",
-        sessionId,
-      );
-      expect(result?.action).not.toBe("deny");
-      expect(result?.reason ?? "").not.toContain("retrieval MCP richiesto");
-    });
-
-    it("redirects broad text searches but allows bounded rg", () => {
-      const broad = routePreToolUse("Bash", { command: "rg TODO" });
-      expect(broad).not.toBeNull();
-      expect(broad!.action).toBe("modify");
-      expect((broad!.updatedInput as Record<string, string>).command).toContain(
-        "ricerca testuale non limitata",
-      );
-
-      resetGuidanceThrottle();
-      const bounded = routePreToolUse("Bash", {
-        command: "rg --max-count 20 TODO",
-      });
-      expect(bounded).not.toBeNull();
-      expect(bounded!.action).toBe("context");
-    });
-
-    it("redirects raw log/data reads through shell", () => {
-      const result = routePreToolUse("Bash", {
-        command: "Get-Content app.log",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "lettura raw di file dati/log",
-      );
     });
   });
 
@@ -582,7 +329,7 @@ describe("routePreToolUse", () => {
       });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch bloccato");
+      expect(result!.reason).toContain("WebFetch blocked");
       expect(result!.reason).toContain("fetch_and_index");
     });
 
@@ -598,7 +345,7 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_web_fetch", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch bloccato");
+      expect(result!.reason).toContain("WebFetch blocked");
       expect(result!.reason).toContain("fetch_and_index");
       expect(result!.reason).toContain("ctx_search");
     });
@@ -608,7 +355,7 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_fetch_tool", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch bloccato");
+      expect(result!.reason).toContain("WebFetch blocked");
       expect(result!.reason).toContain("fetch_and_index");
       expect(result!.reason).toContain("ctx_search");
     });
@@ -745,24 +492,64 @@ describe("routePreToolUse", () => {
     });
   });
 
+  describe("Codex context-mode MCP execute security", () => {
+    let projectDir: string;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-codex-routing-"));
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(sudo *)"] } }),
+        "utf-8",
+      );
+    });
+
+    afterEach(() => {
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it.each([
+      ["ctx_execute", { language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_execute", { language: "shell", code: "sudo whoami" }],
+      ["ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
+      ["ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
+      ["mcp__other__ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
+    ])("denies shell policy matches for %s", (toolName, toolInput) => {
+      const result = routePreToolUse(toolName, toolInput, projectDir);
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("deny pattern");
+    });
+  });
+
   // ─── Routing block content ──────────────────────────────
 
   describe("routing block content", () => {
     it("contains file_writing_policy forbidding ctx_execute for file writes", () => {
       expect(ROUTING_BLOCK).toContain("<file_writing_policy>");
-      expect(ROUTING_BLOCK).toContain("strumenti nativi di Codex");
+      expect(ROUTING_BLOCK).toContain("NEVER use");
       expect(ROUTING_BLOCK).toContain("ctx_execute");
-      expect(ROUTING_BLOCK).toContain("writer primario");
+      expect(ROUTING_BLOCK).toContain("native Write/Edit tools");
     });
 
     it("forbidden_actions blocks ctx_execute for file creation", () => {
       expect(ROUTING_BLOCK).toContain(
-        "Non ripetere un comando bloccato",
+        "NO",
+      );
+      expect(ROUTING_BLOCK).toContain(
+        "for file creation/modification",
       );
     });
 
     it("artifact_policy specifies native Write tool", () => {
-      expect(ROUTING_BLOCK).toContain("Se produci artifact lunghi");
+      expect(ROUTING_BLOCK).toContain(
+        "Write artifacts (code, configs, PRDs) to FILES. NEVER inline.",
+      );
     });
   });
 
@@ -796,6 +583,106 @@ describe("routePreToolUse", () => {
         query: "vitest documentation",
       });
       expect(result).toBeNull();
+    });
+  });
+
+  // ─── External MCP tools (#529) ──────────────────────────
+  //
+  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so
+  // PreToolUse fires on slack/telegram/gdrive/notion-style MCPs whose payloads
+  // would otherwise spill into context before PostToolUse can act. The routing
+  // branch emits a one-shot context guidance nudge — same throttle model as
+  // bash/read/grep guidance.
+  describe("External MCP tools (#529)", () => {
+    it("emits context guidance for an external slack-style MCP tool", () => {
+      const result = routePreToolUse("mcp__slack__list_channels", {});
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
+      expect(result!.additionalContext).toContain("External MCP tools");
+    });
+
+    it("emits context guidance for telegram, gdrive, and notion namespaces", () => {
+      const tools = [
+        "mcp__plugin_telegram__list_messages",
+        "mcp__claude_ai_Google_Drive__search",
+        "mcp__notion__query_database",
+      ];
+      for (const tool of tools) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        expect(result, `expected guidance for ${tool}`).not.toBeNull();
+        expect(result!.action).toBe("context");
+      }
+    });
+
+    it("does NOT match context-mode's own MCP tools (no double-firing)", () => {
+      // These are routed by dedicated branches above (ctx_execute,
+      // ctx_execute_file, ctx_batch_execute) — they must NOT receive the
+      // external-MCP guidance, which would be redundant noise.
+      const contextModeTools = [
+        "mcp__plugin_context-mode_context-mode__ctx_execute",
+        "mcp__plugin_context-mode_context-mode__ctx_execute_file",
+        "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+        "mcp__context-mode__ctx_execute",
+      ];
+      for (const tool of contextModeTools) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, { language: "javascript", code: "1+1" });
+        // ctx_execute returns null (no security violation, no guidance).
+        // The external-MCP branch must NOT have run for these.
+        if (result !== null) {
+          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
+        }
+      }
+    });
+
+    it("respects the once-per-session guidance throttle", () => {
+      const first = routePreToolUse("mcp__slack__post_message", {});
+      expect(first).not.toBeNull();
+      expect(first!.action).toBe("context");
+
+      // Second call in the same session — guidanceOnce should suppress it.
+      const second = routePreToolUse("mcp__slack__list_users", {});
+      expect(second).toBeNull();
+    });
+
+    it("does NOT match plain Bash/Read/etc as external MCP", () => {
+      // Sanity: tools without the mcp__ prefix should not hit this branch.
+      // Use a tool name the routing branches don't otherwise handle (Bash
+      // would return a guidance from its own branch).
+      const result = routePreToolUse("Glob", { pattern: "**/*.ts" });
+      expect(result).toBeNull();
+    });
+
+    it("treats external MCP tools whose tool part contains 'context-mode' as external", () => {
+      // Guards against the substring-on-full-name false negative: only the
+      // server segment (first chunk after the mcp__ prefix) is checked, so a
+      // notion / slack / etc tool that happens to mention context-mode in its
+      // tool name still receives the external-MCP guidance.
+      const externals = [
+        "mcp__notion__search_context-mode_notes",
+        "mcp__slack__post_to_context-mode_channel",
+      ];
+      for (const tool of externals) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        expect(result, `expected guidance for ${tool}`).not.toBeNull();
+        expect(result!.action).toBe("context");
+        expect(result!.additionalContext).toContain("External MCP tools");
+      }
+    });
+
+    it("does NOT trip on degenerate tool names (empty / bare prefix / null)", () => {
+      // String() coerces these to non-MCP names — must pass through silently.
+      for (const tool of ["", "mcp__", null as unknown as string, undefined as unknown as string]) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        // Either null (passthrough) or NOT external-MCP guidance — never the
+        // external-MCP branch.
+        if (result !== null) {
+          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
+        }
+      }
     });
   });
 });

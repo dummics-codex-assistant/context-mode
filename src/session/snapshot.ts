@@ -158,6 +158,32 @@ function buildDecisionsSection(decisionEvents: StoredEvent[], searchTool: string
   return lines.join("\n");
 }
 
+function buildSessionNotesSection(sessionNoteEvents: StoredEvent[], searchTool: string): string {
+  if (sessionNoteEvents.length === 0) return "";
+
+  const seen = new Set<string>();
+  const summaryLines: string[] = [];
+  const queryTerms: string[] = [];
+
+  for (const ev of sessionNoteEvents.slice(-12)) {
+    if (seen.has(ev.data)) continue;
+    seen.add(ev.data);
+    summaryLines.push(`    ${escapeXML(ev.data)}`);
+    queryTerms.push(`session note ${ev.data}`);
+  }
+
+  if (summaryLines.length === 0) return "";
+
+  const queries = buildQueries(queryTerms);
+  const lines = [
+    `  <session_notes count="${summaryLines.length}">`,
+    ...summaryLines,
+    toolCall(searchTool, queries),
+    `  </session_notes>`,
+  ];
+  return lines.join("\n");
+}
+
 function buildRulesSection(ruleEvents: StoredEvent[], searchTool: string): string {
   if (ruleEvents.length === 0) return "";
 
@@ -402,6 +428,46 @@ function buildIntentSection(intentEvents: StoredEvent[]): string {
   return `  <intent mode="${escapeXML(lastIntent.data)}"/>`;
 }
 
+/**
+ * Raw-prompt safety net (issue #535):
+ * Always surface the most recent user prompts verbatim so the next LLM
+ * sees them even if every universal-rule detector misses. Bound per-prompt
+ * payload to RECENT_MESSAGE_MAX_CHARS Unicode codepoints; bound the total
+ * count to RECENT_MESSAGES_LIMIT to keep the resume block compact.
+ */
+const RECENT_MESSAGES_LIMIT = 3;
+const RECENT_MESSAGE_MAX_CHARS = 400;
+
+function truncateForSnapshot(value: string, max: number): string {
+  const codepoints = [...value];
+  if (codepoints.length <= max) return value;
+  return codepoints.slice(0, max).join("");
+}
+
+function buildRecentMessagesSection(userPromptEvents: StoredEvent[]): string {
+  if (userPromptEvents.length === 0) return "";
+
+  // Last N in chronological order — newest at the bottom mirrors the
+  // way the user reads their own scrollback.
+  const recent = userPromptEvents.slice(-RECENT_MESSAGES_LIMIT);
+
+  const items = recent
+    .map(ev => {
+      const body = truncateForSnapshot(ev.data ?? "", RECENT_MESSAGE_MAX_CHARS);
+      if (!body) return "";
+      return `    <message>${escapeXML(body)}</message>`;
+    })
+    .filter(Boolean);
+
+  if (items.length === 0) return "";
+
+  return [
+    `  <recent_user_messages count="${items.length}">`,
+    ...items,
+    `  </recent_user_messages>`,
+  ].join("\n");
+}
+
 // ── Main builder ─────────────────────────────────────────────────────────────
 
 /**
@@ -426,6 +492,7 @@ export function buildResumeSnapshot(
   const taskEvents: StoredEvent[] = [];
   const ruleEvents: StoredEvent[] = [];
   const decisionEvents: StoredEvent[] = [];
+  const sessionNoteEvents: StoredEvent[] = [];
   const cwdEvents: StoredEvent[] = [];
   const errorEvents: StoredEvent[] = [];
   const envEvents: StoredEvent[] = [];
@@ -434,6 +501,7 @@ export function buildResumeSnapshot(
   const intentEvents: StoredEvent[] = [];
   const skillEvents: StoredEvent[] = [];
   const roleEvents: StoredEvent[] = [];
+  const userPromptEvents: StoredEvent[] = [];
 
   for (const ev of events) {
     switch (ev.category) {
@@ -441,6 +509,7 @@ export function buildResumeSnapshot(
       case "task": taskEvents.push(ev); break;
       case "rule": ruleEvents.push(ev); break;
       case "decision": decisionEvents.push(ev); break;
+      case "session-note": sessionNoteEvents.push(ev); break;
       case "cwd": cwdEvents.push(ev); break;
       case "error": errorEvents.push(ev); break;
       case "env": envEvents.push(ev); break;
@@ -449,6 +518,7 @@ export function buildResumeSnapshot(
       case "intent": intentEvents.push(ev); break;
       case "skill": skillEvents.push(ev); break;
       case "role": roleEvents.push(ev); break;
+      case "user-prompt": userPromptEvents.push(ev); break;
     }
   }
 
@@ -471,6 +541,9 @@ export function buildResumeSnapshot(
 
   const decisions = buildDecisionsSection(decisionEvents, searchTool);
   if (decisions) sections.push(decisions);
+
+  const sessionNotes = buildSessionNotesSection(sessionNoteEvents, searchTool);
+  if (sessionNotes) sections.push(sessionNotes);
 
   const rules = buildRulesSection(ruleEvents, searchTool);
   if (rules) sections.push(rules);
@@ -495,6 +568,11 @@ export function buildResumeSnapshot(
 
   const intent = buildIntentSection(intentEvents);
   if (intent) sections.push(intent);
+
+  // Raw-prompt safety net — always last so it stays adjacent to the next
+  // LLM turn and is read after the structured sections.
+  const recentMessages = buildRecentMessagesSection(userPromptEvents);
+  if (recentMessages) sections.push(recentMessages);
 
   // ── Assemble ──
   const header = `<session_resume events="${events.length}" compact_count="${compactCount}" generated_at="${now}">`;

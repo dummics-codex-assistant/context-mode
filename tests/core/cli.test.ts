@@ -27,6 +27,11 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(pkg.files).toContain("cli.bundle.mjs");
   });
 
+  it("package.json files field includes statusline bin", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toContain("bin");
+  });
+
   it("package.json bundle script builds cli.bundle.mjs", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");
@@ -84,17 +89,10 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(upgradeStart).toBeGreaterThan(-1);
     const upgradeSrc = src.slice(upgradeStart);
     // Must refresh native addons between production deps and global install.
-    // v1.0.110 replaced raw `npm rebuild better-sqlite3` with an existsSync
-    // pre-check + delegation to the shared `healBetterSqlite3Binding` helper
-    // (the helper-missing fallback still mentions npm rebuild as a hint).
-    // Either path is valid — what matters is SOMETHING refreshes the binding
-    // and it sits between the deps install and the global install steps.
+    // Compatibility must be delegated to hooks/ensure-deps.mjs so stale ABI
+    // binaries are repaired before upgrade declares native addons healthy.
     const depsIdx = upgradeSrc.indexOf('"install", "--production"');
-    const rebuildIdx = upgradeSrc.indexOf('"rebuild", "better-sqlite3"');
-    const healIdx = upgradeSrc.indexOf('healBetterSqlite3Binding');
-    const refreshIdx = healIdx > -1
-      ? (rebuildIdx > -1 ? Math.min(healIdx, rebuildIdx) : healIdx)
-      : rebuildIdx;
+    const refreshIdx = upgradeSrc.indexOf('"ensure-deps.mjs"');
     const globalIdx = upgradeSrc.indexOf('"install", "-g"');
     expect(depsIdx).toBeGreaterThan(-1);
     expect(refreshIdx).toBeGreaterThan(-1);
@@ -198,11 +196,31 @@ describe(".mcp.json — MCP server config", () => {
     expect(args[0]).toContain("CLAUDE_PLUGIN_ROOT");
   });
 
-  it("repo-root .mcp.json uses relative path to silence CLAUDE_PLUGIN_ROOT warning", () => {
-    const mcp = JSON.parse(readFileSync(resolve(ROOT, ".mcp.json"), "utf-8"));
-    const args = mcp.mcpServers["context-mode"].args;
-    expect(args[0]).not.toContain("CLAUDE_PLUGIN_ROOT");
-    expect(args[0]).toMatch(/^\.\/|^start\.mjs$/);
+  it(".mcp.json.example template MUST use ${CLAUDE_PLUGIN_ROOT} placeholder (closes #531)", () => {
+    // Architectural lock-in after PR #253 (aea633c) regression:
+    // .mcp.json is no longer tracked in source. The canonical template lives
+    // at .mcp.json.example and MUST use the placeholder so that any
+    // contributor or tool that copies it gets the marketplace-correct form.
+    // The placeholder form is what cli.ts upgrade() writes to the plugin
+    // cache (line 843) and what .claude-plugin/plugin.json mcpServers uses.
+    const example = JSON.parse(
+      readFileSync(resolve(ROOT, ".mcp.json.example"), "utf-8"),
+    );
+    const args = example.mcpServers["context-mode"].args;
+    expect(args[0]).toContain("${CLAUDE_PLUGIN_ROOT}");
+    expect(args[0]).toContain("start.mjs");
+  });
+
+  it("package.json files[] MUST NOT ship .mcp.json (architectural lock — closes #531)", () => {
+    // PR #253 flip-flop: source .mcp.json kept switching between the
+    // placeholder form (correct for end-users via marketplace install) and
+    // the relative form (correct for contributors opening the repo as a
+    // regular project). Stop shipping it in the tarball so the two roles
+    // never collide again. End users get MCP via .claude-plugin/plugin.json
+    // and cli.ts upgrade()'s plugin-cache write — both placeholder.
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toBeDefined();
+    expect(pkg.files).not.toContain(".mcp.json");
   });
 });
 
@@ -391,6 +409,122 @@ describe("ABI-aware native binary caching (#148)", () => {
 
     expect(existsSync(join(releaseDir, "better_sqlite3.abi115.node"))).toBe(true);
     expect(existsSync(join(releaseDir, "better_sqlite3.abi137.node"))).toBe(true);
+  });
+
+  // ── Bun ABI cache seeding (#543) ────────────────────────────
+  //
+  // When ensureNativeCompat runs under Bun, it early-returns BEFORE writing
+  // better_sqlite3.abi${N}.node — so the very next /ctx-upgrade run (which
+  // checks for that file as the success marker) prints a spurious
+  // "Native addon ABI cache missing" warning.
+  //
+  // Bun spoofs process.versions.modules to the Node ABI (e.g. 137 on
+  // Darwin/Bun-1.2+, matching Node 24), so a plain file-copy of the active
+  // better_sqlite3.node to the ABI-tagged path produces the CORRECT
+  // filename for any subsequent Node boot at the same ABI level.
+  //
+  // The fix lives BEFORE the existing `if (typeof globalThis.Bun !== "undefined") return;`
+  // guard inside ensureNativeCompat: if the active binary exists AND the
+  // ABI cache file does NOT, copy active → cache, then early-return.
+  //
+  // @see https://github.com/mksglu/context-mode/issues/543
+
+  describe("Bun ABI cache seeding (#543)", () => {
+    let bunBackup: unknown;
+    const hadBun = "Bun" in globalThis;
+
+    beforeEach(() => {
+      bunBackup = (globalThis as any).Bun;
+      // Simulate Bun runtime without actually running under Bun.
+      (globalThis as any).Bun = { version: "test-shim" };
+    });
+
+    afterEach(() => {
+      if (hadBun) {
+        (globalThis as any).Bun = bunBackup;
+      } else {
+        delete (globalThis as any).Bun;
+      }
+    });
+
+    test("under Bun, with active .node but no abi cache: seeds the cache via copy", async () => {
+      // Load AFTER the Bun shim is installed so the function captures it.
+      const ensureNativeCompat = await loadEnsureNativeCompat();
+      createFakeBinary(binaryPath, "active-binary-from-postinstall");
+      // Cache file is intentionally absent — this is the #543 scenario.
+      expect(existsSync(abiCachePath())).toBe(false);
+
+      ensureNativeCompat(tempDir);
+
+      // The fix: copy active → abi-tagged so the next /ctx-upgrade boot
+      // (under Node) finds the marker file and reports "ABI cache present".
+      expect(existsSync(abiCachePath())).toBe(true);
+      expect(readFileSync(abiCachePath(), "utf-8")).toBe("active-binary-from-postinstall");
+      // Active binary remains untouched.
+      expect(readFileSync(binaryPath, "utf-8")).toBe("active-binary-from-postinstall");
+    });
+
+    test("under Bun, without active .node source: does not throw and does not create cache", async () => {
+      const ensureNativeCompat = await loadEnsureNativeCompat();
+      // No active binary present — Bun-only install or pre-postinstall state.
+      expect(existsSync(binaryPath)).toBe(false);
+
+      expect(() => ensureNativeCompat(tempDir)).not.toThrow();
+
+      // No cache should be invented out of thin air.
+      expect(existsSync(abiCachePath())).toBe(false);
+    });
+
+    test("under Bun, when abi cache already exists: does not overwrite", async () => {
+      const ensureNativeCompat = await loadEnsureNativeCompat();
+      createFakeBinary(binaryPath, "fresh-active");
+      createFakeBinary(abiCachePath(), "preexisting-cache");
+
+      ensureNativeCompat(tempDir);
+
+      // Idempotent: existing cache must be preserved untouched.
+      expect(readFileSync(abiCachePath(), "utf-8")).toBe("preexisting-cache");
+    });
+
+    test("under Bun, when nativeDir is missing entirely: does not throw and does not create cache", async () => {
+      const ensureNativeCompat = await loadEnsureNativeCompat();
+      // Remove the release directory before invocation.
+      rmSync(releaseDir, { recursive: true, force: true });
+      expect(existsSync(releaseDir)).toBe(false);
+
+      expect(() => ensureNativeCompat(tempDir)).not.toThrow();
+
+      // Cache MUST NOT be created because the source dir doesn't exist —
+      // creating files inside a deleted directory would either throw or
+      // re-materialize state the user explicitly removed.
+      expect(existsSync(abiCachePath())).toBe(false);
+    });
+
+    test("under Bun, cache filename uses cross-platform resolve() (no hard-coded separators)", () => {
+      // Source-contract guard: the fix must reuse the existing resolve()-based
+      // path construction (nativeDir / binaryPath / abiCachePath are already
+      // resolve()'d at the top of ensureNativeCompat). A future maintainer
+      // adding hard-coded "/" or "\\" inside the Bun branch would break
+      // Windows. We assert the fix lives inside ensureNativeCompat AND that
+      // no new path concatenation with hard-coded separators appears in
+      // the Bun branch.
+      const src = readFileSync(resolve(ROOT, "hooks", "ensure-deps.mjs"), "utf-8");
+      const fnMatch = src.match(/^export function ensureNativeCompat\b[\s\S]*?^}/m);
+      expect(fnMatch).not.toBeNull();
+      const body = fnMatch![0];
+      // The fix must reference both source and destination paths.
+      expect(body).toMatch(/binaryPath/);
+      expect(body).toMatch(/abiCachePath/);
+      // Cross-platform safety: no path string built with "\\" or "/" literals
+      // inside the Bun gate region. We anchor on the Bun gate comment and
+      // scan the surrounding region for forbidden hard-coded separators.
+      const bunGateIdx = body.indexOf("Bun ships bun:sqlite");
+      expect(bunGateIdx).toBeGreaterThan(-1);
+      const bunRegion = body.slice(Math.max(0, bunGateIdx - 200), bunGateIdx + 600);
+      // No string concatenation with hard-coded path separators in the Bun region.
+      expect(bunRegion).not.toMatch(/["'][^"']*\\\\better_sqlite3/);
+      expect(bunRegion).not.toMatch(/["']\/[^"']*better_sqlite3\.node["']/);
+    });
   });
 });
 
@@ -683,12 +817,14 @@ describe("node:sqlite adapter (#228)", () => {
     db.close();
   });
 
-  test("loadDatabase: source checks platform before choosing node:sqlite (#228)", () => {
+  test("loadDatabase: source uses hasModernSqlite() before choosing node:sqlite (#228, #551)", () => {
     const src = readFileSync(resolve(ROOT, "src", "db-base.ts"), "utf-8");
     const loadDbSection = src.slice(src.indexOf("function loadDatabase"), src.indexOf("return _Database"));
-    // Must check Linux platform
-    expect(loadDbSection).toContain('process.platform');
-    expect(loadDbSection).toContain('"linux"');
+    // #551: gate widened from `process.platform === "linux"` to
+    // hasModernSqlite() — Node 26 broke better-sqlite3 native compile on
+    // macOS arm64, so we prefer node:sqlite on every platform that has it.
+    expect(loadDbSection).toContain("hasModernSqlite()");
+    expect(loadDbSection).not.toMatch(/process\.platform\s*===\s*"linux"/);
     // Must reference NodeSQLiteAdapter
     expect(loadDbSection).toContain("NodeSQLiteAdapter");
     // Must still have better-sqlite3 fallback
@@ -806,6 +942,67 @@ describe("Bin entry uses cli.bundle.mjs", () => {
     expect(doctorSection).toContain("FTS5");
   });
 
+  it("doctor hook script discovery supports flat and nested hook config entries", () => {
+    const helperSrc = readFileSync(resolve(ROOT, "src", "util", "hook-config.ts"), "utf-8");
+    expect(helperSrc).toContain("export function getCommandsFromHookEntry");
+    expect(helperSrc).toContain("(entry as { command?: unknown }).command");
+    expect(helperSrc).toContain("Array.isArray(hooks)");
+    expect(helperSrc).toContain("getCommandsFromHookEntry(entry)");
+    expect(helperSrc).not.toContain("entry.hooks");
+
+    for (const rel of ["src/cli.ts", "src/server.ts"]) {
+      const src = readFileSync(resolve(ROOT, rel), "utf-8");
+      expect(src).toContain('import { getHookScriptPaths } from "./util/hook-config.js";');
+      expect(src).not.toContain("function getCommandsFromHookEntry");
+      expect(src).not.toContain("function getHookScriptPaths");
+    }
+  });
+
+  // ── Algo-D1: doctor consumes adapter.getHealthChecks ──
+  //
+  // The HookAdapter contract grew an OPTIONAL `getHealthChecks(pluginRoot)`
+  // returning HealthCheck[] (src/adapters/types.ts). Doctor must iterate
+  // `adapter.getHealthChecks?.(pluginRoot) ?? []` so claude-code's
+  // direct-existsSync hook checks are surfaced WITHOUT going back through
+  // the regex round-trip that produced the #548 doubled-path FAIL.
+  // Adapters that don't override the optional method get nothing — they
+  // don't have this class of check today.
+  it("cli doctor invokes adapter.getHealthChecks(pluginRoot) (Algo-D1)", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const doctorStart = src.indexOf("async function doctor");
+    const doctorBody = src.slice(doctorStart, doctorStart + 8000);
+    // Wiring: doctor must call the optional method via the safe-call
+    // operator so adapters that don't override it are untouched.
+    expect(doctorBody).toMatch(/adapter\.getHealthChecks\?\.\(pluginRoot\)/);
+    // The result must be iterated and rendered with status branches —
+    // not silently dropped. Match the same `result.status === "OK"`
+    // shape the HealthCheck contract uses.
+    expect(doctorBody).toContain('result.status === "OK"');
+  });
+
+  it("cli doctor renders hook warnings as WARN instead of FAIL", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const loopStart = src.indexOf("for (const result of hookResults)");
+    const loopEnd = src.indexOf("// Hook scripts exist", loopStart);
+    const loop = src.slice(loopStart, loopEnd);
+
+    expect(loop).toContain('result.status === "warn"');
+    expect(loop).toContain("p.log.warn");
+    expect(loop).toContain(": WARN");
+  });
+
+  it("upgrade still reaches hook configuration when already on latest", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const alreadyLatestIdx = src.indexOf("Already on latest");
+    const configureIdx = src.indexOf("Configuring ${adapter.name} hooks");
+
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+
+    const alreadyLatestBlock = src.slice(alreadyLatestIdx, configureIdx);
+    expect(alreadyLatestBlock).not.toContain("return;");
+  });
+
   it("server.ts ctx_upgrade uses cli.bundle.mjs with fallback", () => {
     const src = readFileSync(resolve(ROOT, "src", "server.ts"), "utf-8");
     // ctx_upgrade handler must prefer cli.bundle.mjs
@@ -825,7 +1022,7 @@ describe("Bin entry uses cli.bundle.mjs", () => {
   });
 
   it("openclaw-plugin.ts doctor/upgrade use cli.bundle.mjs with fallback", () => {
-    const src = readFileSync(resolve(ROOT, "src", "openclaw-plugin.ts"), "utf-8");
+    const src = readFileSync(resolve(ROOT, "src", "adapters", "openclaw", "plugin.ts"), "utf-8");
     expect(src).toContain("cli.bundle.mjs");
     // Find the registerCommand blocks, not comments
     const doctorIdx = src.indexOf('name: "ctx-doctor"');
@@ -864,6 +1061,98 @@ describe("start.mjs CLI self-heal", () => {
     // Self-heal must be between ensure-deps import and server import
     expect(selfHealIdx).toBeGreaterThan(ensureDepsIdx);
     expect(selfHealIdx).toBeLessThan(serverImportIdx);
+  });
+
+  // ── Algo-D4: plugin-cache integrity from package.json files[] ──
+  //
+  // #550: partial install (e.g. interrupted npm install, broken
+  // marketplace pull) leaves start.mjs spawnable but server.bundle.mjs
+  // missing. The MCP child then dies silently downstream — user sees
+  // "MCP server failed to start" with no actionable signal. D4 derives
+  // the expected sibling tree from package.json files[] (the npm publish
+  // source of truth) and exits 2 with a structured stderr block listing
+  // the missing files. Algorithmic: adding a new entry to files[] auto-
+  // extends the integrity check — no parallel hardcoded list to
+  // maintain.
+  test("scripts/plugin-cache-integrity.mjs derives expected files from package.json files[]", async () => {
+    const { derivePluginManifest } = await import(
+      "../../scripts/plugin-cache-integrity.mjs"
+    );
+    // Synthetic package.json: directories recurse; files are kept as-is.
+    const pkg = {
+      files: ["server.bundle.mjs", "cli.bundle.mjs", "hooks", "start.mjs"],
+    };
+    const helperRoot = mkdtempSync(join(tmpdir(), "ctx-mode-pcim-"));
+    try {
+      // Build a tree shaped like the npm tarball
+      writeFileSync(join(helperRoot, "server.bundle.mjs"), "");
+      writeFileSync(join(helperRoot, "cli.bundle.mjs"), "");
+      writeFileSync(join(helperRoot, "start.mjs"), "");
+      mkdirSync(join(helperRoot, "hooks"));
+      writeFileSync(join(helperRoot, "hooks", "pretooluse.mjs"), "");
+      writeFileSync(join(helperRoot, "hooks", "sessionstart.mjs"), "");
+
+      const manifest = derivePluginManifest({ pkg, pluginRoot: helperRoot });
+      // Files in files[] kept as-is; directories recurse to enumerate
+      // every file inside.
+      expect(manifest).toContain("server.bundle.mjs");
+      expect(manifest).toContain("cli.bundle.mjs");
+      expect(manifest).toContain("start.mjs");
+      expect(manifest).toContain(join("hooks", "pretooluse.mjs"));
+      expect(manifest).toContain(join("hooks", "sessionstart.mjs"));
+    } finally {
+      rmSync(helperRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("scripts/plugin-cache-integrity.mjs returns OK when all expected siblings exist", async () => {
+    const { assertPluginCacheIntegrity } = await import(
+      "../../scripts/plugin-cache-integrity.mjs"
+    );
+    // The actual repo root has every entry from package.json files[]
+    // present (it's the source of truth that gets published). So a
+    // probe against ROOT must return ok=true.
+    const result = assertPluginCacheIntegrity({ pluginRoot: ROOT });
+    expect(result.ok).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  test("scripts/plugin-cache-integrity.mjs flags missing files as not-ok", async () => {
+    const { assertPluginCacheIntegrity } = await import(
+      "../../scripts/plugin-cache-integrity.mjs"
+    );
+    // Empty pluginRoot → every required file is missing.
+    const emptyRoot = mkdtempSync(join(tmpdir(), "ctx-mode-pcim-empty-"));
+    try {
+      const result = assertPluginCacheIntegrity({ pluginRoot: emptyRoot });
+      expect(result.ok).toBe(false);
+      expect(result.missing.length).toBeGreaterThan(0);
+      // The check must surface the absolute path so users can see
+      // exactly where it looked — not a relative segment.
+      for (const m of result.missing) {
+        expect(m.startsWith(emptyRoot)).toBe(true);
+      }
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("start.mjs invokes assertPluginCacheIntegrity with stderr + exit 2 on failure (Algo-D4)", () => {
+    // Wiring check on the bootstrapper itself: the start.mjs body must
+    // import the helper, call it, and on `!ok` write a structured stderr
+    // block (CONTEXT_MODE_PARTIAL_INSTALL) then process.exit(2). The
+    // structured marker lets external monitoring grep for the exact
+    // failure mode without parsing free-form text.
+    const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
+    expect(src).toContain("plugin-cache-integrity.mjs");
+    expect(src).toContain("assertPluginCacheIntegrity");
+    expect(src).toContain("CONTEXT_MODE_PARTIAL_INSTALL");
+    expect(src).toMatch(/process\.exit\(\s*2\s*\)/);
+  });
+
+  test("scripts/plugin-cache-integrity.mjs ships in npm tarball (package.json files[])", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toContain("scripts/plugin-cache-integrity.mjs");
   });
 });
 
@@ -936,19 +1225,19 @@ describe("SKILL.md prefers MCP tool over Bash", () => {
 
 describe("Package exports", () => {
   test("named export exposes ContextModePlugin factory", async () => {
-    const mod = await import("../../src/opencode-plugin.js");
+    const mod = await import("../../src/adapters/opencode/plugin.js");
     expect(mod.ContextModePlugin).toBeDefined();
     expect(typeof mod.ContextModePlugin).toBe("function");
   });
 
   test("default export has KiloCode PluginModule shape { server }", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.default).toBeDefined();
     expect(typeof mod.default.server).toBe("function");
   });
 
   test("default export does not leak CLI internals", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.toUnixPath).toBeUndefined();
     expect(mod.doctor).toBeUndefined();
     expect(mod.upgrade).toBeUndefined();
@@ -1107,6 +1396,42 @@ describe("Shell-free upgrade (#185)", () => {
     expect(upgradeBody).toContain("chmodSync");
   });
 
+  test("cli.ts upgrade aborts when hook configuration fails instead of reporting success", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    expect(upgradeBody).toContain("Hook configuration failed");
+    expect(upgradeBody).toMatch(/try\s*\{\s*const hookChanges = adapter\.configureAllHooks\(pluginRoot\)/s);
+    expect(upgradeBody).toMatch(/\}\s*catch\s*\(err: unknown\)\s*\{[\s\S]*throw new Error\(`Hook configuration failed: \$\{message\}`\);/s);
+  });
+
+  test("cli.ts entrypoint catches upgrade() rejection and exits non-zero", () => {
+    const entryStart = CLI_SOURCE.indexOf("const args = process.argv.slice(2);");
+    expect(entryStart).toBeGreaterThan(-1);
+    const entryBody = CLI_SOURCE.slice(entryStart, CLI_SOURCE.indexOf("/* -------------------------------------------------------", entryStart + 20));
+
+    expect(entryBody).toContain('} else if (args[0] === "upgrade") {');
+    // Issue #542 — entrypoint now forwards optional --platform <id> from
+    // the ctx_upgrade MCP handler. Match either invocation shape:
+    //   upgrade().catch(...)                      (legacy)
+    //   upgrade(... ? { platform: ... } : ...).catch(...)  (issue #542)
+    expect(entryBody).toMatch(/upgrade\([^)]*\)\.catch\(\(err: unknown\) => \{/);
+    expect(entryBody).toContain("process.exit(1);");
+  });
+
+  test("cli.ts already-latest path still configures hooks", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    const alreadyLatestIdx = upgradeBody.indexOf('p.log.success(color.green("Already on latest")');
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    const configureIdx = upgradeBody.indexOf("adapter.configureAllHooks(pluginRoot)");
+    expect(configureIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+  });
+
   test("server.ts inline fallback uses execFileSync, not execSync", () => {
     // The inline script template must use execFileSync
     const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");
@@ -1116,6 +1441,21 @@ describe("Shell-free upgrade (#185)", () => {
     // Generated script lines must import execFileSync
     expect(inlineSection).toContain("execFileSync");
     expect(inlineSection).not.toMatch(/(?<!File)execSync/);
+  });
+
+  test("server.ts inline fallback copies package files including bin", () => {
+    const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");
+    expect(inlineStart).toBeGreaterThan(-1);
+    const inlineSection = SERVER_SOURCE.slice(inlineStart, SERVER_SOURCE.indexOf("cmd =", inlineStart + 500));
+
+    expect(inlineSection).toContain('readFileSync(join(T,"package.json"),"utf8")');
+    expect(inlineSection).toContain("pkg.files");
+    expect(inlineSection).toContain("Array.isArray(pkg.files)");
+    expect(inlineSection).toContain("for(const item of items)");
+    expect(inlineSection).toContain('writeFileSync(join(P,".mcp.json")');
+    expect(inlineSection).toContain("\\${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    expect(inlineSection).not.toContain("copyDirs");
+    expect(inlineSection).not.toContain("copyFiles");
   });
 });
 
@@ -1155,7 +1495,7 @@ describe("Self-heal hook-path rewriting (#187 + #415 follow-up)", () => {
 // ── PR #183 fix: path traversal prevention in OpenClaw sessionKey ──
 
 describe("OpenClaw sessionKey safety (#183)", () => {
-  const WR_SOURCE = readFileSync(resolve(ROOT, "src/openclaw/workspace-router.ts"), "utf-8");
+  const WR_SOURCE = readFileSync(resolve(ROOT, "src/adapters/openclaw/workspace-router.ts"), "utf-8");
 
   test("workspace regex only allows safe characters (no path traversal)", () => {
     // Must use [a-zA-Z0-9_-]+ not [^:]+ to prevent ../../ in agent name
@@ -1230,7 +1570,7 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(hookMap).toContain('"codex"');
   });
 
-  test("codex HOOK_MAP has pretooluse, posttooluse, sessionstart", () => {
+  test("codex HOOK_MAP has all Codex hook dispatches", () => {
     const mapStart = CLI_SOURCE.indexOf("const HOOK_MAP");
     const mapEnd = CLI_SOURCE.indexOf("};", mapStart) + 2;
     const hookMap = CLI_SOURCE.slice(mapStart, mapEnd);
@@ -1240,7 +1580,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("pretooluse");
     expect(codexBlock).toContain("posttooluse");
+    expect(codexBlock).toContain("precompact");
     expect(codexBlock).toContain("sessionstart");
+    expect(codexBlock).toContain("userpromptsubmit");
+    expect(codexBlock).toContain("stop");
   });
 
   test("codex hooks point to dedicated hooks/codex/ directory", () => {
@@ -1252,7 +1595,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("hooks/codex/pretooluse.mjs");
     expect(codexBlock).toContain("hooks/codex/posttooluse.mjs");
+    expect(codexBlock).toContain("hooks/codex/precompact.mjs");
     expect(codexBlock).toContain("hooks/codex/sessionstart.mjs");
+    expect(codexBlock).toContain("hooks/codex/userpromptsubmit.mjs");
+    expect(codexBlock).toContain("hooks/codex/stop.mjs");
   });
 
   test("hooks/codex/pretooluse.mjs exists", () => {
@@ -1265,6 +1611,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
 
   test("hooks/codex/sessionstart.mjs exists", () => {
     expect(existsSync(resolve(ROOT, "hooks/codex/sessionstart.mjs"))).toBe(true);
+  });
+
+  test("hooks/codex/precompact.mjs exists", () => {
+    expect(existsSync(resolve(ROOT, "hooks/codex/precompact.mjs"))).toBe(true);
   });
 
   test("session-helpers.mjs exports CODEX_OPTS", () => {
@@ -1500,46 +1850,35 @@ describe("better-sqlite3 binding self-heal (#408)", () => {
   });
 });
 
-// ── Upgrade flow: skip npm rebuild when binding present (v1.0.110 fix) ──
-//
-// `/ctx-upgrade` previously ran `npm rebuild better-sqlite3` unconditionally
-// after `npm install --production`. That rebuild's internal prebuild-install
-// spawn raced with the npm install tree-prune and intermittently failed
-// resolving `rc/index` — printing a scary "Native addon rebuild warning"
-// even though the binding from npm install was already healthy. Fix: pre-
-// check `existsSync(better_sqlite3.node)` and skip the rebuild when present;
-// otherwise delegate to the same `healBetterSqlite3Binding` helper used by
-// postinstall + ensure-deps so all three sites share one battle-tested path.
-//
-// Repro context: macOS upgrade 2026-05-04 (Mert), zero binding-functional
-// regression but cosmetic stderr noise + yellow warning that erodes trust.
-
-describe("Upgrade rebuild guard (v1.0.110 — skip npm rebuild when binding present)", () => {
+// ── Upgrade flow: stale ABI guard ─────────────────────────────────────
+// `/ctx-upgrade` must not declare success just because better_sqlite3.node
+// exists. On modern Node the startup probe is skipped, so the ABI-specific
+// cache file is the no-probe compatibility marker and hooks/ensure-deps.mjs
+// owns the repair decision.
+describe("Upgrade native ABI bootstrap", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
   const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
   const upgradeBody = CLI_SOURCE.slice(upgradeStart);
 
-  it("guards npm rebuild with existsSync check on better_sqlite3.node", () => {
-    // A guard must sit on the same code path that calls `npm rebuild
-    // better-sqlite3` so the rebuild is skipped when the binding already
-    // works. Look for an existsSync call referencing the binding within
-    // the rebuild block.
-    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+  it("delegates native compatibility to hooks/ensure-deps.mjs", () => {
+    const rebuildStartIdx = upgradeBody.indexOf("Verifying native addon ABI");
     expect(rebuildStartIdx).toBeGreaterThan(-1);
     const region = upgradeBody.slice(
       Math.max(0, rebuildStartIdx - 600),
       rebuildStartIdx + 800,
     );
-    expect(region).toMatch(/better_sqlite3\.node/);
-    expect(region).toMatch(/existsSync\(/);
+    expect(region).toContain('"hooks", "ensure-deps.mjs"');
+    expect(region).toContain("pathToFileURL");
+    expect(region).toContain("await import");
+    expect(region).not.toContain("binding present");
   });
 
-  it("delegates to healBetterSqlite3Binding when binding is missing", () => {
-    // Single source of truth — when a heal IS needed, use the shared
-    // helper (PR #410) instead of raw `npm rebuild`. Eliminates the
-    // npm-internal prebuild-install / rc resolution race.
-    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+  it("uses the current ABI cache as the native-addon success marker", () => {
+    const rebuildStartIdx = upgradeBody.indexOf("Verifying native addon ABI");
+    expect(rebuildStartIdx).toBeGreaterThan(-1);
     const region = upgradeBody.slice(rebuildStartIdx, rebuildStartIdx + 1500);
-    expect(region).toContain("healBetterSqlite3Binding");
+    expect(region).toContain("better_sqlite3.abi${process.versions.modules}.node");
+    expect(region).toContain("existsSync(bsqAbiCachePath)");
+    expect(region).toContain("ABI cache present");
   });
 });

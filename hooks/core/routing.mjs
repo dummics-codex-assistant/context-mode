@@ -11,12 +11,13 @@
  */
 
 import {
-  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE,
+  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
   createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
+  createExternalMcpGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, openSync, closeSync, readFileSync, writeFileSync, constants as fsConstants } from "node:fs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, statSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -28,60 +29,6 @@ function mcpRedirect(result) {
   if (!isMCPReady()) return null;
   return result;
 }
-
-function codexRetrievalMarkerPath(sessionId) {
-  return resolve(guidanceDirFor(sessionId), "codex-retrieval-mcp-required");
-}
-
-function codexRetrievalDenyCountPath(sessionId) {
-  return resolve(guidanceDirFor(sessionId), "codex-retrieval-deny-count");
-}
-
-function markCodexRetrievalRequired(sessionId) {
-  try { mkdirSync(guidanceDirFor(sessionId), { recursive: true }); } catch {}
-  try {
-    const fd = openSync(codexRetrievalMarkerPath(sessionId), fsConstants.O_CREAT | fsConstants.O_WRONLY);
-    closeSync(fd);
-  } catch {}
-}
-
-function isCodexRetrievalRequired(sessionId) {
-  try { return existsSync(codexRetrievalMarkerPath(sessionId)); } catch { return false; }
-}
-
-function clearCodexRetrievalRequired(sessionId) {
-  try { rmSync(codexRetrievalMarkerPath(sessionId), { force: true }); } catch {}
-  try { rmSync(codexRetrievalDenyCountPath(sessionId), { force: true }); } catch {}
-}
-
-function nextCodexRetrievalDenyCount(sessionId) {
-  const path = codexRetrievalDenyCountPath(sessionId);
-  let count = 0;
-  try {
-    count = Number.parseInt(String(readFileSync(path, "utf8")), 10) || 0;
-  } catch {}
-  count += 1;
-  try { writeFileSync(path, String(count)); } catch {}
-  return count;
-}
-
-function unwrapEchoMessage(value) {
-  return String(value ?? "")
-    .replace(/^echo\s+["']?/i, "")
-    .replace(/["']?\s*$/, "");
-}
-
-function mcpRedirectFor(platform, result, sessionId) {
-  if (platform === "codex" && result?.action === "modify") {
-    markCodexRetrievalRequired(sessionId);
-    return mcpRedirect({
-      action: "deny",
-      reason: unwrapEchoMessage(result.updatedInput?.command)
-        || "context-mode: output potenzialmente rumoroso bloccato. Usa i tool ctx_* MCP.",
-    });
-  }
-  return mcpRedirect(result);
-}
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -89,7 +36,7 @@ import { resolve } from "node:path";
 // Hybrid approach:
 //   - In-memory Set for same-process (OpenCode ts-plugin, vitest)
 //   - File-based markers with O_EXCL for cross-process atomicity
-//     (Codex, Gemini, Cursor, VS Code Copilot)
+//     (Claude Code, Gemini, Cursor, VS Code Copilot)
 //
 // Session identity is resolved in this order:
 //   1. sessionId passed in by the caller (stable across hook invocations)
@@ -138,12 +85,30 @@ function guidanceOnce(type, content, sessionId) {
   return { action: "context", additionalContext: content };
 }
 
+/**
+ * Robust recursive delete. On Windows, `fs.rmSync` on directories under a
+ * tmpdir whose path contains non-ASCII characters (e.g. a Chinese / Japanese /
+ * Korean username) silently no-ops without throwing — see #454. Fall back to a
+ * manual unlink + rmdir walk so the marker dir actually goes away.
+ */
+function rmSyncRobust(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  if (!existsSync(dir)) return;
+  // Manual fallback for Windows + non-ASCII tmpdir paths
+  try {
+    for (const name of readdirSync(dir)) {
+      try { unlinkSync(resolve(dir, name)); } catch {}
+    }
+    rmdirSync(dir);
+  } catch {}
+}
+
 export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
   // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
-  try { rmSync(guidanceDirFor(), { recursive: true, force: true }); } catch {}
+  rmSyncRobust(guidanceDirFor());
   if (sessionId) {
-    try { rmSync(guidanceDirFor(sessionId), { recursive: true, force: true }); } catch {}
+    rmSyncRobust(guidanceDirFor(sessionId));
   }
 }
 
@@ -166,61 +131,166 @@ function stripQuotedContent(cmd) {
     .replace(/"[^"]*"/g, '""');                   // double-quoted strings
 }
 
-function escapeForHookEcho(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
+/**
+ * Built-in allowlist of structurally-bounded Bash commands (#463).
+ *
+ * The PreToolUse Bash nudge ("May produce large output. Use ctx_…") is
+ * tuned for unbounded commands like `find /` or `cat large-file`. On
+ * commands whose stdout is structurally bounded (system probes, version
+ * checks, simple git read subcommands), the nudge is pure noise — a
+ * recurring ~85 tokens that trains the agent to ignore the warning.
+ *
+ * isStructurallyBounded() returns true ONLY when the command:
+ *   1. Has no shell control operators (pipe, redirect, command
+ *      substitution, &&, ||, ;) — any of those can compose with an
+ *      unbounded command and re-introduce flooding.
+ *   2. Matches one of the conservative patterns below.
+ *
+ * Unknown commands are treated as unbounded (false) — fail-safe default.
+ */
+const SAFE_COMMAND_PATTERNS = [
+  // System probes (no stdout, or one short line)
+  // Defense-in-depth (#470): trailing wildcards use `[^\r\n]+` instead of
+  // `.+`. The primary gate is SHELL_CONTROL_OPERATORS, which already rejects
+  // `\n` / `\r`, but in JS regex `\s` matches LF/CR too — so a pattern like
+  // `\s+.+$` would silently span a newline if the operator gate ever
+  // regressed. Anchoring `.+` to a single line removes that latent footgun.
+  /^pwd$/,
+  /^whoami$/,
+  /^hostname(?:\s+-[a-zA-Z]+)?$/,
+  // uname (#517): short-flag probes only (`-a`, `-srm`). No path operands —
+  // uname doesn't take any, and refusing them keeps the pattern strict.
+  /^uname(?:\s+-[a-zA-Z]+)?$/,
+  // id (#517): bare `id`, single short flag (`-u`, `-g`), or single user
+  // operand (`id mksglu`). Output is one line — bounded by definition.
+  /^id(?:\s+\S+)?$/,
+  /^date(?:\s+[^\r\n]+)?$/,
+  /^echo\s/,
+  /^printf\s/,
+  /^which\s+\S+(?:\s+\S+)*$/,
+  /^type\s+\S+(?:\s+\S+)*$/,
+  /^command\s+-v\s+\S+(?:\s+\S+)*$/,
+  /^readlink(?:\s+[^\r\n]+)?$/,
+  /^basename(?:\s+[^\r\n]+)?$/,
+  /^dirname(?:\s+[^\r\n]+)?$/,
+  // realpath (#517): canonical path resolution prints one line per operand.
+  // Same shape as readlink — single-line `[^\r\n]+` to mirror the operator-gate
+  // defense-in-depth from #470.
+  /^realpath(?:\s+[^\r\n]+)?$/,
+  // Filesystem ops (silent on success, errors on stderr only).
+  // For cp / mv / rm we explicitly refuse `-v` / `--verbose`: verbose
+  // mode prints one line per file and can flood on big trees
+  // (recursive copy of /etc, mass rename, etc.). The "silent on
+  // success" invariant only holds without -v.
+  /^cd(?:\s+[^\r\n]+)?$/,
+  /^mkdir(?:\s+[^\r\n]+)?$/,
+  /^touch\s+[^\r\n]+$/,
+  // #517 follow-up: the original `(?!\s+-[a-zA-Z]*v\b)` required `v` to be
+  // the LAST alpha char in the flag bundle, so `-vs`, `-vfr`, `-rvf`,
+  // `-sfvr`, etc. silently slipped past the carve-out and flooded.
+  // `(?!\s+-[a-zA-Z]*v[a-zA-Z]*)` catches `v` anywhere in the bundle.
+  /^mv(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^cp(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^rm(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  // ln (#517): silent on success — same `-v` / `--verbose` carve-out as
+  // cp/mv/rm. Bulk symlink operations with -v flood one line per link.
+  /^ln(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  // ls — refuse recursive (-R / --recursive) to keep output bounded.
+  /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+[^\r\n]+)?$/,
+  // git read-only / status subcommands
+  /^git\s+status(?:\s+[^\r\n]+)?$/,
+  /^git\s+rev-parse(?:\s+[^\r\n]+)?$/,
+  /^git\s+remote(?:\s+-v|\s+show\s+\S+)?$/,
+  /^git\s+branch(?:\s+[^\r\n]+)?$/,
+  /^git\s+config\s+--get(?:\s+[^\r\n]+)?$/,
+  /^git\s+diff\s+--stat(?:\s+[^\r\n]+)?$/,
+  /^git\s+diff\s+--name-only(?:\s+[^\r\n]+)?$/,
+  /^git\s+stash\s+list$/,
+  /^git\s+tag(?:\s+-l(?:\s+[^\r\n]+)?)?$/,
+  // git log only when explicitly bounded by -<N> with N up to two digits
+  /^git\s+log\s+-\d{1,2}(?:\s+[^\r\n]+)?$/,
+  // Version probes (--version anywhere, or `cmd -V`)
+  /(?:^|\s)--version(?:\s|$)/,
+  /^\S+\s+-V(?:\s|$)/,
+];
 
-function isBoundedShellOutput(command) {
-  return (
-    /\|\s*(head|tail|sed\s+-n|Select-Object\s+-(First|Last))\b/i.test(command) ||
-    /\b(head|tail)\s+-(n\s*)?\d+\b/i.test(command) ||
-    /(^|\s)(--max-count|-m|--count|--files-with-matches|--json|--stat|--name-only|--name-status|--check)(\s|=|$)/i.test(command) ||
-    /(^|\s)(-n|--max-count)\s*=?\s*\d+\b/i.test(command) ||
-    /\b(Tail|TotalCount|First|Last)\s+\d+\b/i.test(command)
-  );
-}
+// Bash shell control operators that can compose a safe command with an
+// unbounded sink. Any match disqualifies the command from the allowlist.
+//
+// Note `&` (single — background + sequence): listed BEFORE `&&` in the
+// alternation so the regex engine doesn't accidentally short-match `&&`
+// when `&` is itself a separator (`date & cat huge.log`). Without this,
+// `^date(?:\s+.+)?$` would match the whole string and bypass the gate.
+//
+// `\n` / `\r` (newline injection — #470): bash treats LF as a statement
+// separator equivalent to `;`. CRLF (Windows clipboard paste) and bare CR
+// fall in the same defect class. Without these, `git status\nfind /`
+// would short-match the single-line `^git\s+status` pattern and bypass
+// the gate entirely.
+const SHELL_CONTROL_OPERATORS = /[|`\n\r]|\$\(|>>|>|<(?!<)|&(?!&)|&&|\|\||;/;
 
-function isRetrievalFallbackShell(command) {
-  const stripped = stripQuotedContent(command);
-  return (
-    /(^|\s|&&|\|\||\;)(rg|grep|findstr|Select-String)\b/i.test(stripped) ||
-    /(^|\s|&&|\|\||\;)(Get-ChildItem|gci|ls|dir|tree)\b/i.test(stripped) ||
-    /(^|\s|&&|\|\||\;)(Get-Content|gc|cat|type)\b/i.test(stripped)
-  );
-}
-
-function isBoundedRetrievalFallbackShell(command) {
-  return isRetrievalFallbackShell(command) && isBoundedShellOutput(command);
-}
-
-function isContextModeMcpTool(toolName) {
-  const name = String(toolName ?? "");
-  return /(?:context[-_]?mode|ctx_(?:batch_execute|execute|execute_file|search|fetch_and_index|index|stats|doctor|upgrade|insight|purge))/i.test(name);
-}
-
-function redirectNoisyShell(t, platform, sessionId, command, reason, filter = "2>&1 | tail -80") {
-  const safeCmd = escapeForHookEcho(`${command} ${filter}`.trim());
-  return mcpRedirectFor(platform, {
-    action: "modify",
-    updatedInput: {
-      command: `echo "context-mode: ${reason}. Output potenzialmente rumoroso bloccato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd}\\") per indicizzare tutto e stampare solo sintesi/errori. Non riprovare via shell grezza."`,
-    },
-  }, sessionId);
+/**
+ * @param {string} command Raw Bash command string from the hook payload.
+ * @returns {boolean} true when the command's output is bounded enough that
+ *   the routing nudge would be noise. Conservative — unknown commands
+ *   return false.
+ */
+export function isStructurallyBounded(command) {
+  if (!command) return false;
+  const trimmed = command.trim();
+  if (SHELL_CONTROL_OPERATORS.test(trimmed)) return false;
+  return SAFE_COMMAND_PATTERNS.some(rx => rx.test(trimmed));
 }
 
 // Try to import security module — may not exist
 let security = null;
+let securityInitFailed = false;
 
+/**
+ * @returns {boolean} true if security module loaded successfully.
+ *
+ * Loud fail: if `build/security.js` is missing or fails to import, log a
+ * clear stderr warning instead of swallowing the error silently. Without
+ * this, user-configured `permissions.deny` patterns (#466) become no-ops
+ * with no indication that policy enforcement is disabled — a fail-open
+ * security regression.
+ */
 export async function initSecurity(buildDir) {
   try {
+    const { existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
     const { pathToFileURL } = await import("node:url");
-    const secPath = (await import("node:path")).resolve(buildDir, "security.js");
+    const secPath = resolve(buildDir, "security.js");
+    if (!existsSync(secPath)) {
+      if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+        process.stderr.write(
+          `[context-mode] WARNING: ${secPath} not found — security deny patterns will NOT be enforced. ` +
+            `Run \`npm run build\` to generate it. Set CONTEXT_MODE_SUPPRESS_SECURITY_WARNING=1 to silence.\n`,
+        );
+      }
+      securityInitFailed = true;
+      return false;
+    }
     security = await import(pathToFileURL(secPath).href);
-  } catch { /* not available */ }
+    return true;
+  } catch (err) {
+    if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+      process.stderr.write(
+        `[context-mode] WARNING: failed to load security module — deny patterns NOT enforced: ${err?.message ?? err}\n`,
+      );
+    }
+    securityInitFailed = true;
+    return false;
+  }
+}
+
+/** @returns {boolean} true if a previous initSecurity() call failed to load the module. */
+export function isSecurityInitFailed() {
+  return securityInitFailed;
 }
 
 /**
- * Normalize platform-specific tool names to canonical routing names.
+ * Normalize platform-specific tool names to canonical (Claude Code) names.
  *
  * Evidence:
  * - Gemini CLI: https://github.com/google-gemini/gemini-cli (run_shell_command, read_file, grep_search, web_fetch, activate_skill)
@@ -278,19 +348,95 @@ const TOOL_ALIASES = {
   "execute_bash": "Bash",
 };
 
+function toolLeafName(toolName) {
+  const raw = String(toolName ?? "");
+  const withoutMcpPrefix = raw.startsWith("MCP:") ? raw.slice(4) : raw;
+  const parts = withoutMcpPrefix.split(/__|\//).filter(Boolean);
+  return parts.at(-1) ?? withoutMcpPrefix;
+}
+
+function matchesContextModeTool(toolName, ctxName, legacyName) {
+  const raw = String(toolName ?? "");
+  const leaf = toolLeafName(raw);
+  if (leaf === ctxName) return true;
+  if (raw.startsWith("MCP:") && leaf === legacyName) return true;
+  return raw.includes("context-mode") && leaf === legacyName;
+}
+
+// External MCP detection (#529 + 15-adapter coverage follow-up).
+//
+// MCP-namespaced tool names follow per-platform conventions (see
+// core/tool-naming.mjs):
+//   - `mcp__<server>__<tool>`     Claude Code / Gemini CLI / Antigravity / Qwen Code / Codex
+//   - `MCP:<tool>`                Cursor
+//   - `@<server>/<tool>`          Kiro
+//
+// Tools belonging to context-mode itself are excluded — they have dedicated
+// routing branches above (ctx_execute, ctx_execute_file, ctx_batch_execute)
+// and re-routing them here would double-process the call.
+const MCP_PREFIX = "mcp__";
+const CURSOR_MCP_PREFIX = "MCP:";
+const KIRO_MCP_PREFIX = "@";
+const CTX_TOOL_PREFIX = "ctx_";
+const CONTEXT_MODE_SUBSTRING = "context-mode";
+
+function isExternalMcpTool(toolName) {
+  const raw = String(toolName ?? "");
+
+  // Claude / Codex / Gemini / Qwen / Antigravity wire shape.
+  if (raw.startsWith(MCP_PREFIX)) {
+    const server = raw.slice(MCP_PREFIX.length).split("__")[0];
+    if (!server) return false;
+    return !server.includes(CONTEXT_MODE_SUBSTRING);
+  }
+
+  // Cursor wire shape: `MCP:<tool>` — own tools are `MCP:ctx_*`. There is no
+  // server segment, so the discriminator is the tool-leaf prefix.
+  if (raw.startsWith(CURSOR_MCP_PREFIX)) {
+    const tool = raw.slice(CURSOR_MCP_PREFIX.length);
+    return tool.length > 0 && !tool.startsWith(CTX_TOOL_PREFIX);
+  }
+
+  // Kiro wire shape: `@<server>/<tool>` — own tools are `@context-mode/ctx_*`.
+  if (raw.startsWith(KIRO_MCP_PREFIX) && raw.includes("/")) {
+    const server = raw.slice(KIRO_MCP_PREFIX.length).split("/")[0];
+    if (!server) return false;
+    return !server.includes(CONTEXT_MODE_SUBSTRING);
+  }
+
+  return false;
+}
+
 /**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
  *
  * @param {string} toolName - The tool name as reported by the platform
  * @param {object} toolInput - The tool input/parameters
  * @param {string} [projectDir] - Project directory for security policy lookup
- * @param {string} [platform="codex"] - Platform ID for tool name formatting
+ * @param {string} [platform="claude-code"] - Platform ID for tool name formatting
  * @param {string} [sessionId] - Stable session identifier from hook payload. When
  *   provided, the guidance throttle uses it to scope marker files across hook
  *   invocations even when process.ppid shifts (Windows/Git Bash — see #298).
  */
 export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId) {
-  // Build platform-specific tool namer. This fork defaults to Codex.
+  // ─── Opt-in fail-closed gate (#468 follow-up) ───
+  // Default behavior on security-module load failure is fail-OPEN (a stderr
+  // warning is emitted but routing continues). Security-conscious users can
+  // opt in to fail-CLOSED via CONTEXT_MODE_REQUIRE_SECURITY=1 — every PreToolUse
+  // event is denied with a clear reason until the security module loads cleanly.
+  // Universal gate (applies to all tools, not just Bash) since user `permissions.deny`
+  // patterns may target Read/Write paths that would otherwise leak before security loads.
+  if (process.env.CONTEXT_MODE_REQUIRE_SECURITY === "1" && securityInitFailed) {
+    return {
+      action: "deny",
+      reason:
+        "context-mode: security module unavailable and CONTEXT_MODE_REQUIRE_SECURITY=1 — fail-closed engaged. " +
+        "Run `npm run build` (or reinstall context-mode) to restore security enforcement. " +
+        "To bypass, unset or set CONTEXT_MODE_REQUIRE_SECURITY=0.",
+    };
+  }
+
+  // Build platform-specific tool namer (defaults to claude-code for backward compat)
   const t = createToolNamer(platform || "codex");
 
   // Build platform-specific guidance/routing content
@@ -301,10 +447,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
   // Normalize platform-specific tool name to canonical
   const canonical = TOOL_ALIASES[toolName] ?? toolName;
-
-  if (platform === "codex" && isContextModeMcpTool(toolName)) {
-    clearCodexRetrievalRequired(sessionId);
-  }
 
   // ─── Bash: Stage 1 security check, then Stage 2 routing ───
   if (canonical === "Bash") {
@@ -333,28 +475,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // curl/wget detection: strip quoted content first to avoid false positives
     // like `gh issue edit --body "text with curl in it"` (Issue #63).
     const stripped = stripQuotedContent(command);
-
-    if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isBoundedRetrievalFallbackShell(command)) {
-      return guidanceOnce(
-        "codex-retrieval-bounded-fallback",
-        "context-mode: sticky retrieval mode attivo, ma questo comando e' bounded. Procedi pure per verifica mirata; non allargare a scansioni ricorsive o output grezzo.",
-        sessionId,
-      );
-    }
-
-    if (platform === "codex" && isCodexRetrievalRequired(sessionId) && isRetrievalFallbackShell(command)) {
-      const denyCount = nextCodexRetrievalDenyCount(sessionId);
-      if (denyCount > 1) {
-        return mcpRedirect({
-          action: "deny",
-          reason: `context-mode: retrieval MCP ancora richiesto. Usa ${t("ctx_batch_execute")} con comandi sh/POSIX bounded e query mirate, oppure una shell bounded esplicita (head/--max-count/-TotalCount/Select-Object -First) se serve solo verificare pochi risultati.`,
-        });
-      }
-      return mcpRedirect({
-        action: "deny",
-        reason: `context-mode: retrieval MCP richiesto. Il comando precedente e' stato bloccato per proteggere il contesto; non aggirarlo con shell/read/grep piu' piccoli. Prossima azione: chiama ${t("ctx_batch_execute")}(commands, queries) con label descrittive, comandi bounded che stampano path+linee (es. pwd; rg -n ... | head -200), timeout esplicito e 3-6 query di recupero. I comandi ctx_* girano in shell tipo sh/POSIX: evita PowerShell (Get-Content, Select-Object, backslash Windows) e verifica cwd/path con pwd/ls se serve. Evita scansioni enormi in un batch solo (es. tutta Documents o tutta .codex/skills): fai prima shortlist di path/indici, poi amplia se serve. Poi usa ${t("ctx_search")}(queries: [...]) per follow-up su output gia' indicizzato. Per un singolo file grande usa ${t("ctx_execute_file")}(path, language, code). Dopo un tool ctx_* riuscito, shell mirata torna disponibile per verifiche brevi. Shell normale resta ok per Git breve, edit, mkdir/rm/mv e comandi non di retrieval.`,
-      });
-    }
 
     // curl/wget — allow silent file-output downloads, block stdout floods (#166).
     // Algorithm: split chained commands, evaluate each segment independently.
@@ -393,12 +513,21 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       });
 
       if (hasDangerousSegment) {
-        return mcpRedirectFor(platform, {
+        return mcpRedirect({
           action: "modify",
           updatedInput: {
-            command: `echo "context-mode: curl/wget bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo la risposta utile. Oppure usa ${t("ctx_fetch_and_index")}(url, source) per indicizzare e poi cercare. JavaScript puro, try/catch, niente npm deps. Non riprovare con curl/wget."`,
+            command: `echo "context-mode: curl/wget blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and prints only the answer. Or use ${t("ctx_fetch_and_index")}(url, source) to fetch and index. Write pure JS with try/catch, no npm deps. Do NOT retry with curl/wget."`,
           },
-        }, sessionId);
+          // D2 PRD Phase 3.1: marker payload for PostToolUse byte accounting.
+          redirectMeta: {
+            tool: "Bash",
+            type: "bash-redirected",
+            // 8192 byte default — typical curl/wget HTTP body the agent would
+            // have spilled into the model's context window had we not blocked.
+            bytesAvoided: 8192,
+            commandSummary: command.slice(0, 200),
+          },
+        });
       }
       // All segments safe → allow through
       return null;
@@ -415,12 +544,12 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       /requests\.(get|post|put)\s*\(/i.test(noHeredoc) ||
       /http\.(get|request)\s*\(/i.test(noHeredoc)
     ) {
-      return mcpRedirectFor(platform, {
+      return mcpRedirect({
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: HTTP inline bloccato. Usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo il risultato utile. JavaScript puro con try/catch, niente npm deps. Non riprovare via shell."`,
+            command: `echo "context-mode: HTTP inline bloccato / Inline HTTP blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and console.log() only the result. Write robust pure JS with try/catch, no npm deps. Do NOT retry with Bash."`,
         },
-      }, sessionId);
+      });
     }
 
     // Build tools (gradle, maven, sbt) → redirect to execute sandbox (Issue #38, #406).
@@ -428,52 +557,49 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // Word-boundary guard prevents matching `gradle-wrapper-config`, `mvnDocker`, etc.
     if (/(^|\s|&&|\||\;)(\.\/gradlew|gradlew|gradle|\.\/mvnw|mvnw|mvn|\.\/sbt|sbt)(\s|$)/i.test(stripped)) {
       const safeCmd = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      return mcpRedirectFor(platform, {
+      return mcpRedirect({
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: build tool reindirizzato. Usa ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") per stampare solo errori o sintesi. Non riprovare via shell grezza."`,
+          command: `echo "context-mode: build tool reindirizzato / Build tool redirected. Think in Code — use ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run and print only errors/summary. Do NOT retry with Bash."`,
         },
-      }, sessionId);
+      });
     }
 
-    // Strict noise budget for Dom's Codex fork: prevent common commands from
-    // dumping logs, recursive trees, full diffs, or broad search results into chat.
-    if (!isBoundedShellOutput(command)) {
-      if (/(^|\s|&&|\|\||\;)(ls\s+(-[A-Za-z]*R[A-Za-z]*\b|.*\s--recursive\b)|dir\s+\/s\b|tree\b|Get-ChildItem\b.*\s-Recurse\b|gci\b.*\s-Recurse\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "listing ricorsivo", "2>&1 | head -200");
-      }
-
-      if (/(^|\s|&&|\|\||\;)(docker\s+logs|kubectl\s+logs|journalctl|gh\s+run\s+view\b.*\s--log\b)/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "log non limitato");
-      }
-
-      if (/(^|\s|&&|\|\||\;)(git\s+log|git\s+reflog)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "storia git non limitata", "--max-count=80 --oneline --decorate 2>&1");
-      }
-
-      if (/(^|\s|&&|\|\||\;)(git\s+diff|git\s+show)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "diff git completo non limitato", "2>&1 | head -240");
-      }
-
-      if (/(^|\s|&&|\|\||\;)((npx\s+)?vitest|jest|npm\s+(run\s+)?test|pnpm\s+(run\s+)?test|yarn\s+test|bun\s+test|pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "test runner non limitato");
-      }
-
-      if (/(^|\s|&&|\|\||\;)(rg|grep)\b/i.test(stripped) && !/\b(rg|grep)\s+--files\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "ricerca testuale non limitata", "2>&1 | head -200");
-      }
-
-      if (/(^|\s|&&|\|\||\;)(cat|type|Get-Content|gc)\b.*\.(log|jsonl|csv|tsv|xml|html)\b/i.test(stripped)) {
-        return redirectNoisyShell(t, platform, sessionId, command, "lettura raw di file dati/log", "2>&1 | head -200");
-      }
+    // Skip the routing nudge for commands whose output is structurally
+    // bounded (#463) — pwd, whoami, git status, --version probes, etc.
+    // Conservative: any pipe/redirect/chain disqualifies, unknown commands
+    // still get the nudge.
+    if (isStructurallyBounded(command)) {
+      return null;
     }
 
     // allow all other Bash commands, but inject routing nudge (once per session)
     return guidanceOnce("bash", bashGuidance, sessionId);
   }
 
-  // ─── Read: nudge toward execute_file (once per session) ───
+  // ─── Read: nudge toward execute_file + large-file byte accounting ───
+  // D2 PRD Phase 4 (slices 4.4–4.6): when the file is large enough to flood
+  // context, attach `redirectMeta` so PostToolUse can emit a `read-redirected`
+  // event with the actual file size as bytes_avoided. Threshold = 50 000 bytes;
+  // smaller reads stay on the existing one-shot guidance nudge.
   if (canonical === "Read") {
+    const filePath = toolInput.file_path ?? toolInput.path ?? "";
+    if (filePath) {
+      try {
+        const st = statSync(filePath);
+        if (st.isFile() && st.size > 50_000) {
+          const decision = guidanceOnce("read", readGuidance, sessionId)
+            ?? { action: "context", additionalContext: readGuidance };
+          decision.redirectMeta = {
+            tool: "Read",
+            type: "read-redirected",
+            bytesAvoided: st.size,
+            commandSummary: String(filePath).slice(0, 200),
+          };
+          return decision;
+        }
+      } catch { /* file missing or unreadable — fall through to plain guidance */ }
+    }
     return guidanceOnce("read", readGuidance, sessionId);
   }
 
@@ -487,7 +613,16 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     const url = toolInput.url ?? "";
     return mcpRedirect({
       action: "deny",
-      reason: `context-mode: WebFetch bloccato. Usa ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") per indicizzare, poi ${t("ctx_search")}(queries: [...]) per cercare. In alternativa usa ${t("ctx_execute")}(language, code) per scaricare, processare e stampare solo cio' che serve. JavaScript puro, niente npm deps. Non usare curl, wget o WebFetch.`,
+      reason: `context-mode: curl warning / WebFetch blocked. Non usare curl, wget o WebFetch. Think in Code — use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch and index, then ${t("ctx_search")}(queries: [...]) to query. Or use ${t("ctx_execute")}(language, code) to fetch, process, and console.log() only what you need. Write pure JS, no npm deps.`,
+      // D2 PRD Phase 4.1: marker payload for PostToolUse byte accounting.
+      redirectMeta: {
+        tool: "WebFetch",
+        type: "webfetch-redirected",
+        // 16384 = typical web page body bytes prevented from entering the
+        // model's context window.
+        bytesAvoided: 16384,
+        commandSummary: String(url).slice(0, 200),
+      },
     });
   }
 
@@ -499,7 +634,10 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     const fieldName = ["prompt", "request", "objective", "question", "query", "task"].find(f => f in toolInput) ?? "prompt";
     const prompt = toolInput[fieldName] ?? "";
 
-    const subagentBlock = createRoutingBlock(t, { includeCommands: false });
+    const subagentBlock = createRoutingBlock(
+      createToolNamer(platform || "claude-code"),
+      { includeCommands: false },
+    );
 
     const updatedInput =
       subagentType === "Bash"
@@ -510,12 +648,8 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute: security check for shell commands ───
-  // Match both __execute and __ctx_execute (prefixed tool names)
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute$/.test(toolName)
-  ) {
+  // Match bare, generic MCP, and legacy context-mode execute tool names.
+  if (matchesContextModeTool(toolName, "ctx_execute", "execute")) {
     if (security && toolInput.language === "shell") {
       const code = toolInput.code ?? "";
       const policies = security.readBashPolicies(projectDir);
@@ -533,11 +667,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute_file: check file path + code against deny patterns ───
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute_file$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute_file$/.test(toolName)
-  ) {
+  if (matchesContextModeTool(toolName, "ctx_execute_file", "execute_file")) {
     if (security) {
       // Check file path against Read deny patterns
       const filePath = toolInput.path ?? "";
@@ -567,7 +697,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP batch_execute: check each command individually ───
-  if (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?batch_execute$/.test(toolName)) {
+  if (matchesContextModeTool(toolName, "ctx_batch_execute", "batch_execute")) {
     if (security) {
       const commands = toolInput.commands ?? [];
       const policies = security.readBashPolicies(projectDir);
@@ -585,6 +715,16 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       }
     }
     return null;
+  }
+
+  // ─── External MCP tools: one-shot guidance about routing large payloads ─── (#529)
+  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so this
+  // branch fires for slack/telegram/gdrive/notion-style MCPs whose results would
+  // otherwise spill into context. We don't deny or modify — the agent still needs
+  // the tool's output; we just nudge it to pipe large results through ctx_execute.
+  if (isExternalMcpTool(toolName)) {
+    const externalMcpGuidance = platform ? createExternalMcpGuidance(t) : EXTERNAL_MCP_GUIDANCE;
+    return guidanceOnce("external-mcp", externalMcpGuidance, sessionId);
   }
 
   // Unknown tool — pass through
