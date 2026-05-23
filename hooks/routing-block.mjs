@@ -59,17 +59,9 @@ export function createRoutingBlock(t, options = {}) {
   </file_writing_policy>
 
   <output_constraints>
-    <communication_style>
-      Mantieni lingua e tono definiti dalle istruzioni globali dell'owner.
-      Sii compatto quando basta, espandi solo per rischi, verifiche, decisioni o confusione reale.
-      context-mode non deve imporre stile telegrafico o output inglese.
-    </communication_style>
     <artifact_policy>
       Se produci artifact lunghi, preferisci file. Per risposte brevi, chat normale va bene.
     </artifact_policy>
-    <response_format>
-      Riporta azioni, path, verifiche e blocker in modo proporzionato al task.
-    </response_format>
   </output_constraints>
   <session_continuity>
     Skill, ruoli, decisioni e gate del thread restano validi finche' l'utente non li cambia.

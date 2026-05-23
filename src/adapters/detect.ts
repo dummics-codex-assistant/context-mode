@@ -199,7 +199,7 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
   // copilot-cli — custom fork adapter. Keep it before VS Code Copilot so the
   // standalone CLI is not misclassified as its host/editor integration.
   ["copilot-cli", [
-    { name: "COPILOT_HOME",  role: "workspace" },
+    { name: "COPILOT_HOME",  role: "workspace", detect: false },
     { name: "COPILOT_MODEL", role: "identification" },
   ]],
   // gemini-cli — GEMINI_PROJECT_DIR per google-gemini/gemini-cli

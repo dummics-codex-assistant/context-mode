@@ -276,20 +276,15 @@ describe("static exports", () => {
     expect(BASH_GUIDANCE).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("EXTERNAL_MCP_GUIDANCE uses claude-code naming and matches the factory (#529)", () => {
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_execute",
-    );
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
-    );
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_search",
-    );
+  it("EXTERNAL_MCP_GUIDANCE uses Codex bare naming and matches the factory (#529)", () => {
+    expect(EXTERNAL_MCP_GUIDANCE).toContain("ctx_execute");
+    expect(EXTERNAL_MCP_GUIDANCE).toContain("ctx_fetch_and_index");
+    expect(EXTERNAL_MCP_GUIDANCE).toContain("ctx_search");
+    expect(EXTERNAL_MCP_GUIDANCE).not.toContain("mcp__plugin_context-mode_context-mode__");
     // Drift guard: the static export must equal the factory output with the
-    // default (claude-code) namer — they share a single template.
-    const claudeCodeT = createToolNamer("claude-code");
-    expect(EXTERNAL_MCP_GUIDANCE).toBe(createExternalMcpGuidance(claudeCodeT));
+    // default Codex namer — they share a single template.
+    const codexT = createToolNamer("codex");
+    expect(EXTERNAL_MCP_GUIDANCE).toBe(createExternalMcpGuidance(codexT));
   });
 });
 
@@ -407,7 +402,7 @@ describe("routePreToolUse with platform parameter", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget blocked",
+        "curl/wget bloccato",
       );
     });
 
@@ -420,7 +415,7 @@ describe("routePreToolUse with platform parameter", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch blocked");
+      expect(result!.reason).toContain("WebFetch bloccato");
     });
 
     it("read_file routes as Read → context guidance", () => {

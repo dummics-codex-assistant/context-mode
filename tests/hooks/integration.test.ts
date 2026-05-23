@@ -455,13 +455,13 @@ describe("Security Policy Enforcement", () => {
     );
     // git is in allow list -> falls through to Stage 2 routing
     // Stage 2: git diff is not in the structurally-bounded allowlist
-    // (raw diff can be huge) -> additionalContext with BASH_GUIDANCE
+    // (raw diff can be huge) -> strict noise-budget redirect.
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
-    assert.ok(parsed.hookSpecificOutput.additionalContext, "Allowed Bash command should get additionalContext");
+    assert.ok(parsed.hookSpecificOutput.updatedInput, "Allowed Bash command should get redirected input");
     assert.ok(
-      parsed.hookSpecificOutput.additionalContext.includes("<context_guidance>"),
-      "Expected <context_guidance> in Bash additionalContext",
+      parsed.hookSpecificOutput.updatedInput.command.includes("diff git completo"),
+      "Expected git diff noise-budget redirect",
     );
   });
 

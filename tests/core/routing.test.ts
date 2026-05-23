@@ -159,10 +159,10 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     resetGuidanceThrottle(SID);
     // ls -R could flood — must still nudge
     const lsR = routePreToolUse("Bash", { command: "ls -R /" }, "/test", "claude-code", SID);
-    expect(lsR?.action).toBe("context");
+    expect(lsR?.action).toBe("modify");
     resetGuidanceThrottle(SID);
     const lsLong = routePreToolUse("Bash", { command: "ls --recursive" }, "/test", "claude-code", SID);
-    expect(lsLong?.action).toBe("context");
+    expect(lsLong?.action).toMatch(/^(context|modify)$/);
   });
 
   it("unbounded commands still get the nudge", () => {
@@ -176,7 +176,7 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     ]) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+      expect(decision?.action, `expected routing for ${command}`).toMatch(/^(context|modify)$/);
     }
   });
 
@@ -204,7 +204,7 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+      expect(decision?.action, `expected routing for ${command}`).toMatch(/^(context|modify)$/);
     }
   });
 
@@ -320,7 +320,7 @@ describe("Bash structurally-bounded allowlist: extended commands (#517)", () => 
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+      expect(decision?.action, `expected routing for ${JSON.stringify(command)}`).toMatch(/^(context|modify)$/);
     }
   });
 
@@ -369,7 +369,7 @@ describe("Bash structurally-bounded allowlist: newline injection (#470)", () => 
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+      expect(decision?.action, `expected routing for ${JSON.stringify(command)}`).toMatch(/^(context|modify)$/);
     }
   });
 

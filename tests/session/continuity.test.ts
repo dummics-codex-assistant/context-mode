@@ -106,7 +106,7 @@ describe("SessionStart Hook", () => {
     // routing block must keep the artifact-policy block but MUST NOT push a
     // prose-style directive on the model.
     assert.ok(
-      ctx.includes("Write artifacts"),
+      ctx.includes("artifact lunghi"),
       "Expected artifact policy",
     );
     assert.ok(

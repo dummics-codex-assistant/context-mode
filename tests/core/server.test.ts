@@ -1086,7 +1086,11 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
     delete cleanEnv.CLAUDE_PLUGIN_ROOT;
     delete cleanEnv.CLAUDE_SESSION_ID;
+    delete cleanEnv.CODEX_CI;
+    delete cleanEnv.CODEX_THREAD_ID;
     delete cleanEnv.GEMINI_PROJECT_DIR;
+    delete cleanEnv.COPILOT_HOME;
+    delete cleanEnv.COPILOT_MODEL;
     delete cleanEnv.VSCODE_CWD;
     delete cleanEnv.OPENCODE_PROJECT_DIR;
     delete cleanEnv.PI_PROJECT_DIR;

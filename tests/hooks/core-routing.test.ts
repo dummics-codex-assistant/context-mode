@@ -299,7 +299,7 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Build tool redirected",
+        "build tool reindirizzato",
       );
     });
 
@@ -371,8 +371,7 @@ describe("routePreToolUse", () => {
 
       resetGuidanceThrottle();
       const stat = routePreToolUse("Bash", { command: "git diff --stat" });
-      expect(stat).not.toBeNull();
-      expect(stat!.action).toBe("context");
+      expect(stat).toBeNull();
     });
 
     it("redirects unbounded test runners to ctx_execute", () => {
