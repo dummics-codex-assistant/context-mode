@@ -343,7 +343,7 @@ section "4. better-sqlite3 Native Module"
 # Find .node binary
 SQLITE_NODE_FILE=""
 if [ -d "$PLUGIN_ROOT/node_modules/better-sqlite3" ]; then
-  SQLITE_NODE_FILE="$(find "$PLUGIN_ROOT/node_modules/better-sqlite3" -name '*.node' -type f 2>/dev/null | head -1)"
+  SQLITE_NODE_FILE="$(find -H "$PLUGIN_ROOT/node_modules/better-sqlite3" -name '*.node' -type f 2>/dev/null | head -1)"
 fi
 check "better-sqlite3 .node binary exists" "$([ -n "$SQLITE_NODE_FILE" ] && echo true || echo false)"
 [ -n "$SQLITE_NODE_FILE" ] && kv "Binary path" "$(abbrev_path "$SQLITE_NODE_FILE")"
@@ -378,7 +378,7 @@ ADAPTER_VARS=(
   GEMINI_PROJECT_DIR GEMINI_CLI
   OPENCLAW_HOME OPENCLAW_CLI
   KILO KILO_PID
-  OPENCODE OPENCODE_PID
+  OPENCODE_CLIENT OPENCODE_TERMINAL OPENCODE OPENCODE_PID
   CODEX_CI CODEX_THREAD_ID
   CURSOR_TRACE_ID CURSOR_CLI
   VSCODE_PID VSCODE_CWD
@@ -409,7 +409,7 @@ elif [ -n "${OPENCLAW_HOME:-}${OPENCLAW_CLI:-}" ]; then
   DETECTED_ADAPTER="openclaw"
 elif [ -n "${KILO:-}${KILO_PID:-}" ]; then
   DETECTED_ADAPTER="kilocode"
-elif [ -n "${OPENCODE:-}${OPENCODE_PID:-}" ]; then
+elif [ -n "${OPENCODE_CLIENT:-}${OPENCODE_TERMINAL:-}${OPENCODE:-}${OPENCODE_PID:-}" ]; then
   DETECTED_ADAPTER="opencode"
 elif [ -n "${CLAUDE_SESSION_ID:-}${CLAUDE_PROJECT_DIR:-}" ]; then
   DETECTED_ADAPTER="claude-code"

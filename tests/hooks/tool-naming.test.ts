@@ -88,6 +88,12 @@ describe("getToolName", () => {
     );
   });
 
+  it("returns correct name for antigravity-cli", () => {
+    expect(getToolName("antigravity-cli", "ctx_execute_file")).toBe(
+      "context-mode/ctx_execute_file",
+    );
+  });
+
   it("returns correct name for opencode", () => {
     expect(getToolName("opencode", "ctx_search")).toBe(
       "context-mode_ctx_search",
@@ -323,7 +329,11 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result).not.toBeNull();
     const cmd = (result!.updatedInput as Record<string, string>).command;
     expect(cmd).toContain("ctx_execute");
-    expect(cmd).toContain("HTTP inline bloccato");
+    // PR #683 follow-up (ADR-0003 amendment): "Think in Code" voice-of-trainer
+    // marker was folded into the imperative call instruction. The deny reason
+    // now opens with the affirmative redirect frame; assert on the explicit
+    // ctx_execute call instruction that survived the rewrite.
+    expect(cmd).toContain("Call ctx_execute");
     expect(cmd).not.toContain("mcp__");
   });
 
@@ -386,6 +396,20 @@ describe("routePreToolUse with platform parameter", () => {
     expect(search!.additionalContext).toContain("ctx_execute");
   });
 
+  it("Read guidance uses agy context-mode/<tool> names when platform=antigravity-cli", () => {
+    resetGuidanceThrottle();
+    const result = routePreToolUse(
+      "view_file",
+      { AbsolutePath: "/tmp/a.ts" },
+      "/tmp",
+      "antigravity-cli",
+    );
+    expect(result).not.toBeNull();
+    expect(result!.action).toBe("context");
+    expect(result!.additionalContext).toContain("context-mode/ctx_execute_file");
+    expect(result!.additionalContext).not.toContain("mcp__context-mode__ctx_execute_file");
+  });
+
   it("build tool redirect uses platform tool names when platform=gemini-cli", () => {
     const result = routePreToolUse("Bash", { command: "./gradlew build" }, "/tmp", "gemini-cli");
     expect(result).not.toBeNull();
@@ -406,8 +430,8 @@ describe("routePreToolUse with platform parameter", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toMatch(
-        /curl\/wget blocked|curl\/wget bloccato/,
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "curl/wget redirected",
       );
     });
 
@@ -420,7 +444,7 @@ describe("routePreToolUse with platform parameter", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toMatch(/WebFetch blocked|WebFetch bloccato/);
+      expect(result!.reason).toContain("WebFetch redirected");
     });
 
     it("read_file routes as Read → context guidance", () => {

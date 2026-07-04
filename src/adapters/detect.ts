@@ -11,7 +11,9 @@
  *                     CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
  *   - KiloCode:       KILO, KILO_PID | ~/.config/kilo/
- *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
+ *   - OpenCode:       OPENCODE_PROJECT_DIR, OPENCODE_CLIENT,
+ *                     OPENCODE_TERMINAL, OPENCODE, OPENCODE_PID |
+ *                     ~/.config/opencode/
  *   - OpenClaw:       OPENCLAW_HOME, OPENCLAW_CLI | ~/.openclaw/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
@@ -84,12 +86,20 @@ export function __seedClaudeCodePluginCacheMissForTests(): void {
  *     `resolveProjectDir({ strictPlatform })` to form the candidate list,
  *     and by Pi's bridge to scrub foreign workspace vars on child spawn.
  *   - `identification`: env var only signals which host is running; carries
- *     no project path. NEVER scrubbed (some are load-bearing, e.g.
- *     CLAUDE_PLUGIN_ROOT for hook integrations).
+ *     no project path. PRESERVED in normal operation (some are load-bearing
+ *     for hook integrations on the host that owns them, e.g. CLAUDE_PLUGIN_ROOT
+ *     for Claude Code's hook context).
  *
  * Issue #545 — algorithmic env-leak fix. The split allows resolveProjectDir
  * to derive ALLOW (own workspace vars) and BAN (other platforms' workspace
- * vars) sets from a single registry, satisfying MUST-3 (15 adapters equal).
+ * vars) sets from a single registry, satisfying MUST-3 (17 adapters equal).
+ *
+ * Issue #561 — FOREIGN identification vars MUST be scrubbed when spawning a
+ * child under a different host (e.g. Pi spawning context-mode child must
+ * scrub Claude Code identification vars CLAUDE_CODE_ENTRYPOINT /
+ * CLAUDE_PLUGIN_ROOT to prevent detectPlatform() in the child from
+ * misidentifying the host as claude-code and writing Pi's data into
+ * ~/.claude/context-mode/). See `foreignIdentificationEnv()` below.
  */
 export type EnvVarRole = "workspace" | "identification";
 export interface PlatformEnvEntry {
@@ -161,12 +171,15 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
     { name: "KILO_PID", role: "identification" },
   ]],
   // opencode — sst/opencode packages/opencode/src/index.ts:108-109 sets
-  // OPENCODE=1 + OPENCODE_PID=<pid> on every CLI invocation.
+  // OPENCODE=1 + OPENCODE_PID=<pid> on CLI invocations. OpenCode desktop
+  // shells also expose OPENCODE_CLIENT=desktop and OPENCODE_TERMINAL=1.
   // OPENCODE_PROJECT_DIR is the documented workspace var (consumed by the
   // legacy resolver cascade) — listed first so the workspace cascade picks
   // it up under strict mode.
   ["opencode", [
     { name: "OPENCODE_PROJECT_DIR", role: "workspace" },
+    { name: "OPENCODE_CLIENT",      role: "identification" },
+    { name: "OPENCODE_TERMINAL",    role: "identification" },
     { name: "OPENCODE",             role: "identification" },
     { name: "OPENCODE_PID",         role: "identification" },
   ]],
@@ -216,8 +229,9 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
   //   refs/platforms/oh-my-pi/packages/coding-agent/src/mcp/transports/stdio.ts:55-63
   // (env passthrough only, no synthesis). The Pi runtime DOES set
   // PI_CONFIG_DIR (config dir override), PI_SESSION_FILE (active session
-  // path), and PI_COMPILED (binary build marker). PI_CODING_AGENT_DIR is
-  // owned by OMP above; keep it there.
+  // path), PI_COMPILED (binary build marker), and PI_CODING_AGENT=true
+  // in package-spawned MCP children (#760). PI_CODING_AGENT_DIR is owned
+  // by OMP above; keep it there.
   //
   // Issue #545 — PI_WORKSPACE_DIR / PI_PROJECT_DIR are workspace vars set
   // by Pi's bridge so the resolver picks them up under strict mode.
@@ -232,6 +246,7 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
     { name: "PI_CONFIG_DIR",    role: "identification" },
     { name: "PI_SESSION_FILE",  role: "identification" },
     { name: "PI_COMPILED",      role: "identification" },
+    { name: "PI_CODING_AGENT",  role: "identification" },
   ]],
   // openclaw — removed (runtime never sets OPENCLAW_HOME or OPENCLAW_CLI;
   // detection falls through to ~/.openclaw/ config-dir tier below).
@@ -280,6 +295,36 @@ export function foreignWorkspaceEnv(platform: PlatformId): Set<string> {
 }
 
 /**
+ * Issue #561 — return the union of identification env vars from ALL
+ * platforms EXCEPT the given one. Sibling of `foreignWorkspaceEnv`,
+ * filtered on `role === "identification"` instead of "workspace".
+ *
+ * Consumed by Pi's bridge env scrub: when Pi spawns the context-mode
+ * MCP child, the child inherits the host shell env including any
+ * identification vars set by a co-resident Claude Code session
+ * (CLAUDE_CODE_ENTRYPOINT / CLAUDE_PLUGIN_ROOT). Without scrubbing,
+ * `detectPlatform()` in the child falls through env priority order and
+ * resolves to claude-code first — Pi's session data then writes into
+ * `~/.claude/context-mode/` instead of Pi's own dir. Scrubbing FOREIGN
+ * identification vars (everyone else's) preserves Pi's OWN identification
+ * vars (PI_CONFIG_DIR / PI_SESSION_FILE / PI_COMPILED) so the child still
+ * detects pi correctly.
+ *
+ * Algorithmic, registry-driven — adding adapter #16 grows the scrub
+ * automatically (no edit to mcp-bridge.ts).
+ */
+export function foreignIdentificationEnv(platform: PlatformId): Set<string> {
+  const ban = new Set<string>();
+  for (const [p, vars] of PLATFORM_ENV_VARS) {
+    if (p === platform) continue;
+    for (const v of vars) {
+      if (v.role === "identification") ban.add(v.name);
+    }
+  }
+  return ban;
+}
+
+/**
  * Sync map from platform identifier → home-relative path segments where that
  * platform stores its config. Mirrors the `super([...])` argument passed by
  * each adapter — kept in sync as the single source of truth used when we need
@@ -294,14 +339,17 @@ export function getSessionDirSegments(platform: string): string[] | null {
     case "claude-code":      return [".claude"];
     case "gemini-cli":       return [".gemini"];
     case "antigravity":      return [".gemini"];
+    case "antigravity-cli":  return [".gemini"];
     case "openclaw":         return [".openclaw"];
     case "codex":            return [".codex"];
     case "cursor":           return [".cursor"];
     case "vscode-copilot":   return [".vscode"];
+    case "copilot-cli":      return [".copilot"];
     case "kiro":             return [".kiro"];
     case "pi":               return [".pi"];
     case "omp":              return [".omp"];
     case "qwen-code":        return [".qwen"];
+    case "kimi":             return [".kimi-code"];
     case "kilo":             return [".config", "kilo"];
     case "opencode":         return [".config", "opencode"];
     case "zed":              return [".config", "zed"];
@@ -342,7 +390,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
+      "vscode-copilot", "jetbrains-copilot", "copilot-cli", "cursor", "antigravity", "antigravity-cli", "kiro", "pi", "omp", "zed", "qwen-code", "kimi",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -385,6 +433,70 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   // ── Medium confidence: config directory existence ──────
 
   const home = homedir();
+
+  // Issue #774 — dedicated CLI agents (Antigravity CLI `agy`, GitHub Copilot
+  // CLI) MUST be probed BEFORE the generic ~/.claude and ~/.gemini fallbacks.
+  // A user migrating from gemini-cli to `agy` keeps ~/.claude AND ~/.gemini, so
+  // the ~/.claude check below otherwise wins and `context-mode doctor`
+  // mis-detected `agy` as Claude Code — pointing storage at ~/.claude and
+  // reporting the wrong platform (reproduced in #774).
+  //
+  // Regression guard (whole-branch detection-ordering review): these markers
+  // are deliberately narrow so they cannot relocate an existing Claude Code
+  // user's storage from a bare shell. The antigravity-cli markers are either
+  // agy-exclusive (`~/.local/bin/agy`, `~/.gemini/antigravity-cli`) or map to
+  // the SAME `~/.gemini` root as gemini-cli (so a mis-detect is storage-neutral
+  // and never collides with `~/.gemini/settings.json` (gemini-cli) or
+  // `~/.gemini/antigravity/` (Antigravity IDE)). The copilot-cli marker is
+  // gated on a context-mode-written file (NOT a bare `~/.copilot/` directory),
+  // so a Claude Code user who merely co-installed GitHub Copilot CLI — but has
+  // not configured context-mode for it — is NOT pulled away from ~/.claude.
+  // GitHub Copilot CLI's config root is relocatable via COPILOT_HOME (the
+  // documented relocation env, incl. on Windows), so the marker must honor it —
+  // not just ~/.copilot. Mirrors copilotCliHome() in copilot-cli/index.ts.
+  const copilotHome = (() => {
+    const raw = process.env.COPILOT_HOME;
+    if (raw && raw.trim() !== "") {
+      return raw.startsWith("~") ? resolve(home, raw.replace(/^~[/\\]?/, "")) : resolve(raw);
+    }
+    return resolve(home, ".copilot");
+  })();
+  const copilotConfigured =
+    existsSync(resolve(copilotHome, "mcp-config.json")) ||
+    existsSync(resolve(copilotHome, "hooks", "context-mode.json"));
+
+  // A non-empty COPILOT_HOME is an explicit user/session selection, not a
+  // passive co-install marker. Respect it before agy's global markers so a
+  // Copilot doctor run in an isolated COPILOT_HOME is not stolen by an
+  // unrelated ~/.local/bin/agy or ~/.gemini/config/mcp_config.json.
+  if (process.env.COPILOT_HOME?.trim() && copilotConfigured) {
+    return {
+      platform: "copilot-cli",
+      confidence: "medium",
+      reason: "context-mode config in explicit COPILOT_HOME exists (mcp-config.json or hooks/context-mode.json)",
+    };
+  }
+
+  if (
+    existsSync(resolve(home, ".local", "bin", "agy")) ||
+    existsSync(resolve(home, ".gemini", "antigravity-cli")) ||
+    existsSync(resolve(home, ".gemini", "config", "mcp_config.json"))
+  ) {
+    return {
+      platform: "antigravity-cli",
+      confidence: "medium",
+      reason:
+        "Antigravity CLI marker exists (~/.local/bin/agy, ~/.gemini/antigravity-cli, or ~/.gemini/config/mcp_config.json)",
+    };
+  }
+
+  if (copilotConfigured) {
+    return {
+      platform: "copilot-cli",
+      confidence: "medium",
+      reason: "context-mode config in Copilot CLI home exists (mcp-config.json or hooks/context-mode.json; honors COPILOT_HOME)",
+    };
+  }
 
   if (existsSync(resolve(home, ".claude"))) {
     return {
@@ -449,6 +561,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "qwen-code",
       confidence: "medium",
       reason: "~/.qwen/ directory exists",
+    };
+  }
+
+  if (existsSync(resolve(home, ".kimi-code"))) {
+    return {
+      platform: "kimi",
+      confidence: "medium",
+      reason: "~/.kimi-code/ directory exists",
     };
   }
 
@@ -554,6 +674,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
       return new JetBrainsCopilotAdapter();
     }
 
+    case "copilot-cli": {
+      const { CopilotCliAdapter } = await import("./copilot-cli/index.js");
+      return new CopilotCliAdapter();
+    }
+
     case "cursor": {
       const { CursorAdapter } = await import("./cursor/index.js");
       return new CursorAdapter();
@@ -562,6 +687,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "antigravity": {
       const { AntigravityAdapter } = await import("./antigravity/index.js");
       return new AntigravityAdapter();
+    }
+
+    case "antigravity-cli": {
+      const { AntigravityCliAdapter } = await import("./antigravity-cli/index.js");
+      return new AntigravityCliAdapter();
     }
 
     case "kiro": {
@@ -590,6 +720,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
       // ~/.claude/context-mode/. PiAdapter pins storage to ~/.pi/.
       const { PiAdapter } = await import("./pi/index.js");
       return new PiAdapter();
+    }
+
+    case "kimi": {
+      const { KimiAdapter } = await import("./kimi/index.js");
+      return new KimiAdapter();
     }
 
     default: {

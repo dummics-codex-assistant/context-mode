@@ -65,14 +65,18 @@ describe("isPluginInstallPath", () => {
   it("matches macOS / Linux plugin cache paths", () => {
     expect(isPluginInstallPath("/Users/x/.claude/plugins/cache/context-mode/context-mode/1.0.112")).toBe(true);
     expect(isPluginInstallPath("/home/x/.claude/plugins/cache/foo/foo/1.0.0")).toBe(true);
+    expect(isPluginInstallPath("/Users/x/.codex/plugins/cache/context-mode/context-mode/1.0.151")).toBe(true);
+    expect(isPluginInstallPath("/home/x/.codex/plugins/cache/foo/foo/1.0.0")).toBe(true);
   });
 
   it("matches plugin marketplace paths", () => {
     expect(isPluginInstallPath("/Users/x/.claude/plugins/marketplaces/context-mode")).toBe(true);
+    expect(isPluginInstallPath("/Users/x/.codex/plugins/marketplaces/context-mode")).toBe(true);
   });
 
   it("matches Windows plugin cache paths (backslash + drive letter)", () => {
     expect(isPluginInstallPath("C:\\Users\\x\\.claude\\plugins\\cache\\foo\\foo\\1.0.0")).toBe(true);
+    expect(isPluginInstallPath("C:\\Users\\x\\.codex\\plugins\\cache\\foo\\foo\\1.0.0")).toBe(true);
   });
 
   it("returns false for ordinary project paths", () => {
@@ -116,6 +120,18 @@ describe("resolveProjectDir", () => {
       pwd: "/Users/x/Server/realproj",
     });
     expect(result).toBe("/Users/x/Server/realproj"); // PWD wins, skipping poisoned env + plugin cwd
+  });
+
+  it("rejects Codex plugin path env vars and falls through to the next source", () => {
+    const result = resolveProjectDir({
+      env: {
+        CLAUDE_PROJECT_DIR: "/Users/x/.codex/plugins/cache/context-mode/context-mode/1.0.151",
+        CONTEXT_MODE_PROJECT_DIR: "/Users/x/.codex/plugins/cache/context-mode/context-mode/1.0.151",
+      },
+      cwd: "/Users/x/.codex/plugins/cache/context-mode/context-mode/1.0.151",
+      pwd: "/Users/x/Work/Dev/ucw",
+    });
+    expect(result).toBe("/Users/x/Work/Dev/ucw");
   });
 
   it("uses cwd as last resort when env + PWD are missing or all poisoned", () => {
@@ -293,6 +309,32 @@ describe("resolveProjectDirFromTranscript", () => {
     expect(result).toBeUndefined();
   });
 
+  it("returns undefined when the newest transcript is older than maxAgeMs", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-stale", "stale-session", "/Users/x/stale-proj", new Date(now - 60_000));
+
+    const result = resolveProjectDirFromTranscript({
+      projectsRoot: root,
+      maxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns cwd when the newest transcript is within maxAgeMs", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-fresh", "fresh-session", "/Users/x/fresh-proj", new Date(now - 10_000));
+
+    const result = resolveProjectDirFromTranscript({
+      projectsRoot: root,
+      maxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBe("/Users/x/fresh-proj");
+  });
+
   it("returns undefined when no jsonl files exist", () => {
     const root = makeTranscriptsRoot();
     mkdirSync(join(root, "-Users-x-empty"), { recursive: true });
@@ -334,6 +376,22 @@ describe("resolveProjectDirFromTranscript", () => {
       transcriptsRoot: "/nonexistent/transcripts",
     });
     expect(result).toBe("/Users/x/proj");
+  });
+
+  it("resolveProjectDir falls back to PWD when transcript is stale", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-stale", "stale-session", "/Users/x/stale-proj", new Date(now - 60_000));
+
+    const result = resolveProjectDir({
+      env: {},
+      cwd: "/Users/x",
+      pwd: "/Users/x",
+      transcriptsRoot: root,
+      transcriptMaxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBe("/Users/x");
   });
 
   it("compiled ESM resolver runs under Node without CommonJS require", () => {

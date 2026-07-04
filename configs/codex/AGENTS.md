@@ -25,7 +25,9 @@ Non sostituisce le istruzioni globali dell'owner, le skill del progetto, `AGENTS
 - pagine web o documenti grandi da indicizzare e interrogare
 - ripresa sessione quando serve cercare decisioni o vincoli gia' indicizzati
 
-## Quando non serve
+### Shell (>20 lines output)
+Shell ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "javascript", code: "...")`. Use `language: "shell"` only when code matches the host shell.
 
 - comandi Git brevi e mirati
 - lettura di pochi file prima di editarli
@@ -33,7 +35,8 @@ Non sostituisce le istruzioni globali dell'owner, le skill del progetto, `AGENTS
 - verifiche che producono meno di circa 20 righe utili
 - micro-risposte o domande concettuali senza bisogno di contesto locale
 
-## Scelta strumenti
+### grep / search (large results)
+Use `ctx_execute(language: "javascript", code: "...")` in sandbox for portable filtering/counting.
 
 0. `ctx_search(queries, sort: "timeline")`: dopo resume/compact, cerca decisioni, vincoli, rejected approach e summary prima di chiedere all'utente.
 1. `ctx_batch_execute(commands, queries)`: default per discovery multi-comando. Usa label descrittive: diventano titoli FTS5 e aiutano il recupero.

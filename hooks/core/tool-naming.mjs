@@ -7,6 +7,7 @@
  * |--------------------|------------------------------------------------------------|
  * | Gemini CLI         | mcp__context-mode__<tool>                                  |
  * | Antigravity        | mcp__context-mode__<tool>                                  |
+ * | Antigravity CLI    | context-mode/<tool>                                        |
  * | OpenCode           | context-mode_<tool>                                        |
  * | VS Code Copilot    | context-mode_<tool>                                        |
  * | Kiro               | @context-mode/<tool>                                       |
@@ -18,6 +19,7 @@ const TOOL_PREFIXES = {
   "claude-code":    (tool) => `mcp__plugin_context-mode_context-mode__${tool}`,
   "gemini-cli":     (tool) => `mcp__context-mode__${tool}`,
   "antigravity":    (tool) => `mcp__context-mode__${tool}`,
+  "antigravity-cli": (tool) => `context-mode/${tool}`,
   "opencode":       (tool) => `context-mode_${tool}`,
   "kilo":           (tool) => `context-mode_${tool}`,
   "vscode-copilot": (tool) => `context-mode_${tool}`,
@@ -27,6 +29,7 @@ const TOOL_PREFIXES = {
   "zed":            (tool) => `mcp:context-mode:${tool}`,
   "cursor":         (tool) => tool,
   "codex":          (tool) => tool,
+  "kimi":           (tool) => `mcp__context-mode__${tool}`,
   "openclaw":       (tool) => tool,
   "pi":             (tool) => tool,
   "qwen-code":      (tool) => `mcp__context-mode__${tool}`,

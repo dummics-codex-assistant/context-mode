@@ -1,37 +1,39 @@
 #!/usr/bin/env node
 import "../suppress-stderr.mjs";
 import "../ensure-deps.mjs";
-/**
- * GitHub Copilot CLI postToolUse hook — session event capture.
- */
 
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, COPILOT_CLI_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
-import { dirname } from "node:path";
+import {
+  readStdin,
+  parseStdin,
+  getSessionId,
+  getSessionDBPath,
+  getInputProjectDir,
+  COPILOT_OPTS,
+  resolveConfigDir,
+} from "../session-helpers.mjs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
-const OPTS = COPILOT_CLI_OPTS;
+const OPTS = COPILOT_OPTS;
+// Diagnostic log is opt-in via CONTEXT_MODE_DEBUG. PostToolUse fires on every
+// tool call, so an unconditional append-only log grows without bound under the
+// user's config dir. Gate it behind the env flag — same pattern as the kimi
+// hooks — so contributors can still capture it on demand. See #787 review.
+const DEBUG_LOG = process.env.CONTEXT_MODE_DEBUG
+  ? join(resolveConfigDir(OPTS), "context-mode", "posttooluse-debug.log")
+  : null;
 
-function parseToolArgs(value) {
-  if (value && typeof value === "object") return value;
-  if (typeof value !== "string" || value.trim().length === 0) return {};
+function logDebug(line) {
+  if (!DEBUG_LOG) return;
   try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    mkdirSync(dirname(DEBUG_LOG), { recursive: true });
+    appendFileSync(DEBUG_LOG, line);
   } catch {
-    return { raw: value };
-  }
-}
-
-function stringifyResult(result) {
-  if (typeof result?.textResultForLlm === "string") return result.textResultForLlm;
-  if (typeof result === "string") return result;
-  try {
-    return JSON.stringify(result ?? "");
-  } catch {
-    return "";
+    /* silent */
   }
 }
 
@@ -39,28 +41,39 @@ try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
+  const toolName = input.tool_name ?? input.toolName ?? "";
+  const toolInput = input.tool_input ?? input.toolArgs ?? {};
+  const toolResponse =
+    input.tool_result?.text_result_for_llm ??
+    input.toolResult?.textResultForLlm ??
+    input.tool_response ??
+    input.toolResult;
+
+  logDebug(`[${new Date().toISOString()}] CALL: ${toolName}\n`);
 
   const { extractEvents } = await loadExtract();
   const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
-  const dbPath = getSessionDBPath(OPTS);
+  const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
   const sessionId = getSessionId(input, OPTS);
 
   db.ensureSession(sessionId, projectDir);
 
-  const normalizedInput = {
-    tool_name: input.toolName ?? input.tool_name ?? "",
-    tool_input: parseToolArgs(input.toolArgs ?? input.tool_input ?? {}),
-    tool_response: stringifyResult(input.toolResult ?? input.tool_response),
-    is_error: input.toolResult?.resultType === "failure",
-  };
+  const events = extractEvents({
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_response: typeof toolResponse === "string"
+      ? toolResponse
+      : JSON.stringify(toolResponse ?? ""),
+    tool_output: input.tool_output,
+  });
 
-  const events = extractEvents(normalizedInput);
   attributeAndInsertEvents(db, sessionId, events, input, projectDir, "PostToolUse", resolveProjectAttributions);
 
+  logDebug(`[${new Date().toISOString()}] OK: ${toolName} -> ${events.length} events\n`);
   db.close();
-} catch {
-  // Copilot CLI ignores output here; never block the session.
+} catch (err) {
+  logDebug(`[${new Date().toISOString()}] ERR: ${err?.message || err}\n`);
 }

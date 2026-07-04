@@ -56,6 +56,9 @@ describe("detectPlatform — config directory branches", () => {
     [".cursor", "cursor"],
     [".kiro", "kiro"],
     [".pi", "pi"],
+    [".omp", "omp"],
+    [".qwen", "qwen-code"],
+    [".kimi-code", "kimi"],
     [".openclaw", "openclaw"],
   ])("detects %s → %s at medium confidence", (dir, expected) => {
     forceDir(resolve(home, dir));
@@ -102,6 +105,28 @@ describe("detectPlatform — config directory branches", () => {
     expect(signal.confidence).toBe("high");
   });
 
+  it("PI_CODING_AGENT=true wins over stale ~/.claude when Pi spawns the MCP server (issue #760)", () => {
+    existsSyncMock.mockImplementation(
+      ((p: unknown) =>
+        p === resolve(home, ".claude") || p === resolve(home, ".pi")) as typeof fs.existsSync,
+    );
+    process.env.PI_CODING_AGENT = "true";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("pi");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it.each<[string, string]>([
+    ["OPENCODE_CLIENT", "desktop"],
+    ["OPENCODE_TERMINAL", "1"],
+  ])("%s wins over a matching config dir", (envName, envValue) => {
+    forceDir(resolve(home, ".codex"));
+    process.env[envName] = envValue;
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
   it("CONTEXT_MODE_PLATFORM override wins over a matching config dir", () => {
     forceDir(resolve(home, ".claude"));
     process.env.CONTEXT_MODE_PLATFORM = "antigravity";
@@ -135,6 +160,7 @@ describe("detectPlatform — config directory branches", () => {
     [".omp", "omp"],
     [".kiro", "kiro"],
     [".qwen", "qwen-code"],
+    [".kimi-code", "kimi"],
     [".gemini", "gemini-cli"],
     [".claude", "claude-code"],
     [".codex", "codex"],
@@ -148,6 +174,74 @@ describe("detectPlatform — config directory branches", () => {
   it("bare ~/.cursor/ (no agent dir) still resolves to cursor (regression)", () => {
     forceDir(resolve(home, ".cursor"));
     expect(detectPlatform().platform).toBe("cursor");
+  });
+
+  // ── Issue #774 — dedicated CLI agents BEFORE generic ~/.claude / ~/.gemini ──
+  //
+  // A user migrating from gemini-cli to Antigravity CLI (`agy`) keeps BOTH
+  // ~/.claude and ~/.gemini. The closed PR shipped without this ordering, so
+  // `context-mode doctor` matched ~/.claude first and mis-detected `agy` as
+  // Claude Code — pointing storage at ~/.claude (reproduced in #774). These
+  // rows lock the dedicated-CLI markers ahead of the generic fallbacks.
+  it.each<[string[], string]>([
+    [[".local", "bin", "agy"], "antigravity-cli"],
+    [[".gemini", "antigravity-cli"], "antigravity-cli"],
+    [[".gemini", "config", "mcp_config.json"], "antigravity-cli"],
+  ])("detects Antigravity CLI marker ~/%s → antigravity-cli at medium confidence", (segs, expected) => {
+    forceDir(resolve(home, ...segs));
+    const signal = detectPlatform();
+    expect(signal.platform).toBe(expected);
+    expect(signal.confidence).toBe("medium");
+  });
+
+  it("detects ~/.copilot/mcp-config.json → copilot-cli at medium confidence", () => {
+    forceDir(resolve(home, ".copilot", "mcp-config.json"));
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("copilot-cli");
+    expect(signal.confidence).toBe("medium");
+  });
+
+  it("explicit COPILOT_HOME config beats passive agy markers", () => {
+    process.env.COPILOT_HOME = resolve(home, "isolated-copilot");
+    existsSyncMock.mockImplementation(
+      ((p: unknown) =>
+        p === resolve(home, "isolated-copilot", "mcp-config.json") ||
+        p === resolve(home, ".local", "bin", "agy") ||
+        p === resolve(home, ".gemini", "config", "mcp_config.json")) as typeof fs.existsSync,
+    );
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("copilot-cli");
+    expect(signal.confidence).toBe("medium");
+  });
+
+  // Regression guard (detection-ordering review): a BARE ~/.copilot/ directory
+  // (GitHub Copilot CLI co-installed but context-mode NOT configured there)
+  // must NOT outrank ~/.claude — only context-mode-written files under
+  // ~/.copilot promote copilot-cli. Protects existing Claude Code users.
+  it("bare ~/.copilot/ (no context-mode config) does NOT outrank ~/.claude", () => {
+    existsSyncMock.mockImplementation(
+      ((p: unknown) =>
+        p === resolve(home, ".copilot") ||
+        p === resolve(home, ".claude")) as typeof fs.existsSync,
+    );
+    expect(detectPlatform().platform).toBe("claude-code");
+  });
+
+  it.each<[string[], string]>([
+    [[".local", "bin", "agy"], "antigravity-cli"],
+    [[".gemini", "config", "mcp_config.json"], "antigravity-cli"],
+    [[".copilot", "mcp-config.json"], "copilot-cli"],
+  ])("dedicated CLI marker ~/%s beats ~/.claude AND ~/.gemini when all coexist (issue #774)", (segs, expected) => {
+    const target = resolve(home, ...segs);
+    existsSyncMock.mockImplementation(
+      ((p: unknown) =>
+        p === target ||
+        p === resolve(home, ".claude") ||
+        p === resolve(home, ".gemini")) as typeof fs.existsSync,
+    );
+    const signal = detectPlatform();
+    expect(signal.platform).toBe(expected);
+    expect(signal.confidence).toBe("medium");
   });
 });
 
