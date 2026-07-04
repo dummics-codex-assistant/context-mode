@@ -687,7 +687,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     };
   }
 
-  // Build platform-specific tool namer (defaults to claude-code for backward compat)
+  // Build platform-specific tool namer (local Codex fork defaults to Codex)
   const t = createToolNamer(platform || "codex");
 
   // Build platform-specific guidance/routing content
@@ -899,9 +899,8 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
     // Claude Code surfaces ctx_* as DEFERRED tools (schemas loaded via ToolSearch).
     // Without a bootstrap step the subagent is told to use ctx_* tools it cannot yet
-    // invoke and stalls (see #724). Prepend the ToolSearch bootstrap for claude-code
-    // (the default when platform is unset). Other platforms don't defer, so skip it.
-    const isClaudeCode = !platform || platform === "claude-code";
+    // invoke and stalls (see #724). Other platforms don't defer, so skip it.
+    const isClaudeCode = platform === "claude-code";
     const subagentBlock = createRoutingBlock(t, {
       includeCommands: false,
       toolSearchBootstrap: isClaudeCode,

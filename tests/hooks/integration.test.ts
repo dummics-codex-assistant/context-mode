@@ -189,7 +189,7 @@ describe("Bash: Redirected Commands", () => {
       tool_name: "Bash",
       tool_input: { command: "./gradlew build --info" },
     });
-    assertRedirect(result, "build tool reindirizzato");
+    assertRedirect(result, "Build tool redirected");
   });
 
   test("Bash + mvn package: redirected to execute sandbox (Issue #38)", () => {
@@ -197,7 +197,7 @@ describe("Bash: Redirected Commands", () => {
       tool_name: "Bash",
       tool_input: { command: "mvn clean package -DskipTests" },
     });
-    assertRedirect(result, "build tool reindirizzato");
+    assertRedirect(result, "Build tool redirected");
   });
 });
 
@@ -663,9 +663,9 @@ describe("Codex Tool Name Format in ROUTING_BLOCK", () => {
     assert.ok(!reason.includes(SHORT_PREFIX + "ctx_fetch_and_index"), "WebFetch deny must not contain short-form MCP prefix");
   });
 
-  test("Bash inline-HTTP redirect uses plugin-format execute tool name (in deny reason)", () => {
+  test("Bash inline-HTTP redirect uses Codex bare execute tool name (in deny reason)", () => {
     // CC v2.1.x Bash tool ignores updatedInput.command — the formatter now
-    // emits deny + permissionDecisionReason. The plugin-format tool name
+    // emits deny + permissionDecisionReason. The Codex bare tool name
     // assertion moves from updatedInput.command to permissionDecisionReason.
     const bashCmd = "python3 -c 'import requests; requests.get(url)'";
     const result = runHook({ tool_name: "Bash", tool_input: { command: bashCmd } });
@@ -673,8 +673,8 @@ describe("Codex Tool Name Format in ROUTING_BLOCK", () => {
     const parsed = JSON.parse(result.stdout);
     const reason = parsed.hookSpecificOutput.permissionDecisionReason;
     assert.ok(typeof reason === "string" && reason.length > 0, "Expected non-empty permissionDecisionReason");
-    assert.ok(reason.includes(PLUGIN_PREFIX + "ctx_execute"), "Expected plugin-format ctx_execute in inline-HTTP redirect reason");
-    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_execute"), "Inline-HTTP redirect must not contain short-form ctx_execute");
+    assert.ok(reason.includes("ctx_execute"), "Expected ctx_execute in inline-HTTP redirect reason");
+    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_execute"), "Inline-HTTP redirect must not contain short-form MCP prefix");
   });
 });
 
