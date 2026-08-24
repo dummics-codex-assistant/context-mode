@@ -18,28 +18,31 @@ Non sostituisce le istruzioni globali dell'owner, le skill del progetto, `AGENTS
 ## Quando usarlo
 
 - log lunghi, transcript, JSONL, sessioni, output CI/test voluminoso
-- `rg`, `git`, scansioni o inventari con molti risultati
+- `rg`, `git`, scansioni o inventari solo quando i risultati previsti sono realmente numerosi o richiedono analisi ripetuta
 - confronto tra molti file o directory
 - scouting approfondito di docs, cataloghi, routing documentale o riferimenti MCP/tooling
 - analisi di dati strutturati, conteggi, filtri, deduplica, clustering
 - pagine web o documenti grandi da indicizzare e interrogare
 - ripresa sessione quando serve cercare decisioni o vincoli gia' indicizzati
 
-### Shell (>20 lines output)
-Shell ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
-Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "javascript", code: "...")`. Use `language: "shell"` only when code matches the host shell.
+### Native shell/search first
 
-- comandi Git brevi e mirati
-- lettura di pochi file prima di editarli
-- diff piccoli o file gia' identificati
-- verifiche che producono meno di circa 20 righe utili
-- micro-risposte o domande concettuali senza bisogno di contesto locale
+Usa direttamente shell, `rg`, `rg --files`, `Get-ChildItem`, `dir`, `ls` e letture normali per lavoro locale bounded:
 
-### grep / search (large results)
-Use `ctx_execute(language: "javascript", code: "...")` in sandbox for portable filtering/counting.
+- ricerca di cartelle, file o marker noti;
+- individuazione di progetti Unity (`ProjectSettings/ProjectVersion.txt`) e varianti nominate;
+- uno o due comandi mirati con path, pattern, depth, limit o campi selezionati;
+- comandi Git brevi, diff piccoli e lettura di pochi file gia' identificati;
+- piccoli filtri o conteggi su output gia' compatto.
+
+Non esiste una soglia rigida di 20 righe. Conta il volume atteso, la prevedibilita' e la necessita' di riuso: context-mode e' giustificato quando l'output grezzo sarebbe rumoroso o serve parsing/aggregazione sostanziale, non solo perche' il comando cerca o usa una pipe.
+
+### Context-mode per risultati grandi
+
+Usa `ctx_execute` o `ctx_batch_execute` per ricerche repo-wide, inventari ampi, output non prevedibile, molte fonti o analisi ripetute. Prima prova a restringere nativamente il comando; non aggiungere un passaggio di indicizzazione a una ricerca locale che e' gia' compatta.
 
 0. `ctx_search(queries, sort: "timeline")`: dopo resume/compact, cerca decisioni, vincoli, rejected approach e summary prima di chiedere all'utente.
-1. `ctx_batch_execute(commands, queries)`: default per discovery multi-comando. Usa label descrittive: diventano titoli FTS5 e aiutano il recupero.
+1. `ctx_batch_execute(commands, queries)`: discovery multi-comando solo quando e' ampia o rumorosa. Usa label descrittive: diventano titoli FTS5 e aiutano il recupero.
 2. `ctx_search(queries, source, sort)`: follow-up su contenuto gia' indicizzato. Passa tutte le domande correlate in un'unica chiamata.
 3. `ctx_execute(language, code)`: analisi computazionale, filtri, conteggi, parsing e sintesi. Stampa solo il risultato utile.
 4. `ctx_execute_file(path, language, code)`: analisi di file grande senza portarlo tutto nel contesto.
@@ -51,13 +54,13 @@ Per scouting docs/repo ampio: usa prima `ctx_batch_execute` con `rg` mirati, let
 
 ## Hook e sicurezza del contesto
 
-Gli hook possono bloccare o guidare operazioni rumorose come fetch raw, `curl`/`wget`, HTTP inline o output enormi. Se un hook blocca un comando, riformula l'azione con output filtrato o usa uno dei tool `ctx_*`.
+Gli hook possono bloccare o guidare operazioni deterministicamente rumorose come fetch raw, `curl`/`wget`, HTTP inline o build molto verbose. Non devono intercettare o scoraggiare grep/rg mirati, ricerca di cartelle/progetti, piccoli listing o altre operazioni locali bounded.
 
 Non aggirare l'hook ripetendo lo stesso comando con un wrapper diverso. Riduci l'output o indicizzalo.
 
 Azioni da evitare quando l'output puo' esplodere:
 
-- Shell normale per output atteso sopra circa 20 righe: usa `ctx_batch_execute` o `ctx_execute`.
+- Shell normale per output grezzo realmente grande o imprevedibile: restringi prima il comando; usa `ctx_batch_execute` o `ctx_execute` quando il risultato resta rumoroso.
 - Lettura raw di file grandi solo per analizzarli: usa `ctx_execute_file`. Lettura normale ok se devi editare.
 - Web fetch raw o inline HTTP: usa `ctx_fetch_and_index`, oppure `ctx_execute` se serve una chiamata API filtrata.
 - `ctx_execute` o `ctx_execute_file` per creare/modificare file: sono strumenti di analisi, non di scrittura.

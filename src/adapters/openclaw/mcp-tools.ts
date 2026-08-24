@@ -86,7 +86,7 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
   {
     name: "ctx_execute",
     description:
-      "Execute code in a sandboxed subprocess. Only stdout enters context. Prefer over Bash for any command producing >20 lines.",
+      "Execute code in a sandboxed subprocess. Only stdout enters context. Use for large, unpredictable, or processing-heavy output; keep bounded local search and compact observations on native shell tools.",
     parameters: {
       type: "object",
       properties: {
@@ -160,7 +160,7 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
   {
     name: "ctx_batch_execute",
     description:
-      "Run multiple commands and search queries in ONE call. Primary research tool — replaces 30+ individual calls.",
+      "Run multiple broad or noisy commands and search queries in ONE call. Avoid for one or two lightweight local searches or compact observations.",
     parameters: {
       type: "object",
       properties: {

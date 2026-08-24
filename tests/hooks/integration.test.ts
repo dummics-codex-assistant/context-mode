@@ -324,21 +324,13 @@ describe("Read", () => {
 });
 
 describe("Grep", () => {
-  test("Grep + pattern: hookSpecificOutput with additionalContext nudge", () => {
+  test("Grep + pattern: native passthrough without context-mode nudge", () => {
     const result = runHook({
       tool_name: "Grep",
       tool_input: { pattern: "TODO", path: "/src" },
     });
-    assertHookSpecificOutput(result, "additionalContext");
-    const parsed = JSON.parse(result.stdout);
-    assert.ok(
-      parsed.hookSpecificOutput.additionalContext.includes("context-mode"),
-      "Expected nudge to mention context-mode",
-    );
-    assert.ok(
-      parsed.hookSpecificOutput.additionalContext.includes("<context_guidance>"),
-      "Expected <context_guidance> XML wrapper in Grep nudge",
-    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "");
   });
 });
 
@@ -645,13 +637,10 @@ describe("Codex Tool Name Format in ROUTING_BLOCK", () => {
     assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute_file"), "Read nudge must not contain short-form MCP prefix");
   });
 
-  test("Grep nudge uses Codex bare execute tool name", () => {
+  test("Grep uses native passthrough in Codex", () => {
     const result = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO" } });
     assert.equal(result.exitCode, 0);
-    const parsed = JSON.parse(result.stdout);
-    const ctx = parsed.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes("ctx_execute"), "Expected ctx_execute in Grep nudge");
-    assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute"), "Grep nudge must not contain short-form MCP prefix");
+    assert.equal(result.stdout, "");
   });
 
   test("WebFetch deny reason uses Codex bare fetch_and_index tool name", () => {

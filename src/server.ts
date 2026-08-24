@@ -1676,7 +1676,7 @@ Concrete shape — analyze 47 source files without reading any of them:
   // 47 files analyzed, 15,314 LoC summarized — output ~3.6 KB instead of 47 Read() calls = ~700 KB.
 
 WHEN:
-  - You intend to derive an answer FROM data (filter, count, aggregate, parse, compare, transform) — do the derivation in code and print only the answer
+  - You intend to derive an answer from a large or noisy dataset (filter, count, aggregate, parse, compare, transform) — do the derivation in code and print only the answer
   - Output shape or size cannot be predicted before execution (recursive finds, repo-wide greps, list endpoints, query results, log scans)
   - You would otherwise read raw output and then mentally compute — that compute belongs here, in code, where its inputs stay out of your conversation
   - You need to keep a long-running process alive (dev server, watcher, daemon) — pass \`background: true\` to detach on timeout instead of killing the process
@@ -1684,6 +1684,8 @@ WHEN:
 
 WHEN NOT:
   - Single observational command whose entire short output you intend to consume verbatim (whoami, pwd, git status on a clean tree) — Bash is simpler
+  - Targeted rg/rg --files, folder or Unity-project discovery, short directory listings, or one/few bounded filesystem queries — use native shell/search directly
+  - Small filters or counts over output that is already predictably compact — direct shell is lower latency
   - File mutations (Edit/Write) or navigation (cd/ls) — Bash is the right surface
   - You already know the output is one short fixed line and you want to read it as-is
 
@@ -2577,7 +2579,7 @@ WHEN:
 
 WHEN NOT:
   - The data you want to query has never been stored in the knowledge base AND no session memory has accumulated around it — capture first (run a gather-and-index call), then come back here to query
-  - You have one ad-hoc question against data that is not in the knowledge base — answer it inline by running code in the sandbox tool; one round-trip instead of capture-then-query
+  - You have one ad-hoc question against live local files or folders that is not in the knowledge base — use targeted native shell/search first; use ctx_execute only if the raw result would be large
 
 RETURNS:
   Per-query ranked sections with window-extracted snippets. Use 2-4 specific technical terms per query. Common session-memory source labels: \`decision\` (user corrections / preferences), \`error\` and \`error-resolution\` (past failures + their fixes), \`blocker\`, \`plan\`, \`user-prompt\`, \`rejected-approach\`, \`compaction\` (post-compact session guide). See ctx_stats for live category counts. Each response carries a throttle counter (call #N/M in the rolling time window); results taper toward the soft cap and calls block after the hard cap. Tune via CONTEXT_MODE_SEARCH_WINDOW_MS, CONTEXT_MODE_SEARCH_MAX_RESULTS_AFTER, CONTEXT_MODE_SEARCH_BLOCK_AFTER.
@@ -3694,13 +3696,14 @@ server.registerTool(
 Concurrency parallelizes the FETCH phase (run-the-commands). The DERIVATION phase — turning raw output into an answer — still belongs in code: add a processing command that consumes the indexed output and prints only the answer, so the raw bytes never enter your conversation (Think-in-Code, same principle as the sandbox tool).
 
 WHEN:
-  - You have 3+ related commands you would otherwise run sequentially (multi-issue lookups, git log + git diff + git blame, multi-file reads, multi-region cloud queries)
+  - You have several related commands whose combined raw output would be large or noisy (multi-issue lookups, broad history/diff analysis, many-file reads, multi-region cloud queries)
   - You want to gather AND query in one round trip — pass \`queries\` so the matching sections come back inline
   - You want to parallelize I/O-bound work — pass \`concurrency\` 2-8 (network calls, gh CLI, cloud APIs, multi-repo git reads)
   - The combined output is large enough that piping it through ctx_search later would itself be expensive — let auto-index + inline queries do both in one shot
 
 WHEN NOT:
-  - Single command with no follow-up query — run it in the sandbox tool directly
+  - One or two lightweight local commands, targeted rg/file/folder search, project-marker lookup, or compact observation — run directly without indexing
+  - Single large command with no follow-up query — use ctx_execute instead
   - CPU-bound or stateful commands — keep concurrency at 1 (npm test, build, lint, port-binding servers, lock-file holders, anything that races on the same resource)
 
 RETURNS:

@@ -360,11 +360,9 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result!.additionalContext).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
 
-  it("Grep guidance uses zed tool names when platform=zed", () => {
+  it("Grep passes through for zed", () => {
     const result = routePreToolUse("Grep", { pattern: "TODO" }, "/tmp", "zed");
-    expect(result).not.toBeNull();
-    expect(result!.action).toBe("context");
-    expect(result!.additionalContext).toContain("mcp:context-mode:ctx_execute");
+    expect(result).toBeNull();
   });
 
   it("Bash guidance uses openclaw bare names when platform=openclaw", () => {
@@ -391,9 +389,7 @@ describe("routePreToolUse with platform parameter", () => {
     expect(read!.additionalContext).toContain("ctx_execute_file");
 
     const search = routePreToolUse("search", { pattern: "TODO" }, "/tmp", "openclaw");
-    expect(search).not.toBeNull();
-    expect(search!.action).toBe("context");
-    expect(search!.additionalContext).toContain("ctx_execute");
+    expect(search).toBeNull();
   });
 
   it("Read guidance uses agy context-mode/<tool> names when platform=antigravity-cli", () => {
@@ -459,15 +455,14 @@ describe("routePreToolUse with platform parameter", () => {
       expect(result!.additionalContext).toContain("ctx_execute_file");
     });
 
-    it("grep_search routes as Grep → context guidance", () => {
+    it("grep_search routes as Grep and passes through", () => {
       const result = routePreToolUse(
         "grep_search",
         { pattern: "TODO" },
         "/tmp",
         "qwen-code",
       );
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
+      expect(result).toBeNull();
     });
   });
 });

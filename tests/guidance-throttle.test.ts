@@ -42,15 +42,15 @@ describe("guidance throttle", () => {
     expect(r2).toBeNull();
   });
 
-  it("Grep: first call returns guidance, second returns null", () => {
+  it("Grep: native search always passes through", () => {
     const r1 = routePreToolUse("Grep", { pattern: "foo" }, PROJECT_DIR);
     const r2 = routePreToolUse("Grep", { pattern: "bar" }, PROJECT_DIR);
 
-    expect(r1?.action).toBe("context");
+    expect(r1).toBeNull();
     expect(r2).toBeNull();
   });
 
-  it("throttle is per-type: Read throttle does not affect Bash or Grep", () => {
+  it("throttle is per-type: Read throttle does not affect Bash; Grep bypasses it", () => {
     const read1 = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR);
     // Use unbounded commands so the #463 allowlist does not short-circuit
     // the bash branch — we are validating per-type throttle independence,
@@ -58,10 +58,10 @@ describe("guidance throttle", () => {
     const bash1 = routePreToolUse("Bash", { command: "npm install" }, PROJECT_DIR);
     const grep1 = routePreToolUse("Grep", { pattern: "foo" }, PROJECT_DIR);
 
-    // All first calls return guidance
+    // Read and Bash receive guidance; native Grep passes through.
     expect(read1?.action).toBe("context");
     expect(bash1?.action).toBe("context");
-    expect(grep1?.action).toBe("context");
+    expect(grep1).toBeNull();
 
     // All second calls return null
     const read2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR);
@@ -215,13 +215,13 @@ describe("guidance throttle", () => {
     });
 
     it("resetGuidanceThrottle(sessionId) clears the session-scoped dir", () => {
-      const r1 = routePreToolUse("Grep", { pattern: "foo" }, PROJECT_DIR, "claude-code", SESSION_A);
+      const r1 = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR, "claude-code", SESSION_A);
       expect(r1?.action).toBe("context");
-      expect(fs.existsSync(path.resolve(sessionDir(SESSION_A), "grep"))).toBe(true);
+      expect(fs.existsSync(path.resolve(sessionDir(SESSION_A), "read"))).toBe(true);
 
       resetGuidanceThrottle(SESSION_A);
 
-      const r2 = routePreToolUse("Grep", { pattern: "bar" }, PROJECT_DIR, "claude-code", SESSION_A);
+      const r2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR, "claude-code", SESSION_A);
       expect(r2?.action).toBe("context");
     });
 

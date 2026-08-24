@@ -462,7 +462,7 @@ describe("ContextModePlugin", () => {
       expect(result).toBeUndefined();
     });
 
-    it("injects guidance for allowed grep commands", async () => {
+    it("lets allowed grep commands use native search without guidance", async () => {
       const plugin = await createTestPlugin(join(tempDir, "before-guidance"));
 
       const input = { tool: "grep", sessionID: "test-session", callID: "call-4" };
@@ -470,9 +470,8 @@ describe("ContextModePlugin", () => {
 
       await plugin["tool.execute.before"](input, output);
 
-      // Guidance should be injected as additionalContext in args
       expect(output.args).toHaveProperty("additionalContext");
-      expect(output.args.additionalContext).toContain("<context_guidance>");
+      expect(output.args.additionalContext).toBeUndefined();
     });
   });
 

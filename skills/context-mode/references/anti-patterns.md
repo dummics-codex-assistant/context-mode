@@ -19,7 +19,7 @@ GOOD — just use Bash:
   command: node --version
 ```
 
-**Rule:** If the output fits comfortably in your context window (under ~20 lines), use Bash directly. Reserve `execute` for outputs that would bloat context or need intelligent summarization.
+**Rule:** If the output is predictably compact and useful as-is, use shell/search directly. Reserve `execute` for outputs that would materially bloat context or need substantial summarization.
 
 More examples of "just use Bash":
 - `git status` — usually 5-10 lines
@@ -274,7 +274,7 @@ The mental model:
 
 Before using `execute`, verify:
 
-- [ ] Output will be > 20 lines (otherwise use Bash)
+- [ ] Output is large, unpredictable, or needs substantial processing (otherwise use native shell/search)
 - [ ] Script prints all results to stdout
 - [ ] Objects are serialized with JSON.stringify / json.dumps
 - [ ] Timeout matches the operation type

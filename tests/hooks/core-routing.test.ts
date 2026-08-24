@@ -40,7 +40,6 @@ let initSecurity: (buildDir: string) => Promise<boolean>;
 let ROUTING_BLOCK: string;
 let createRoutingBlock: (t: any, options?: { includeCommands?: boolean; toolSearchBootstrap?: boolean }) => string;
 let READ_GUIDANCE: string;
-let GREP_GUIDANCE: string;
 
 beforeAll(async () => {
   const mod = await import("../../hooks/core/routing.mjs");
@@ -52,7 +51,6 @@ beforeAll(async () => {
   ROUTING_BLOCK = constants.ROUTING_BLOCK;
   createRoutingBlock = constants.createRoutingBlock;
   READ_GUIDANCE = constants.READ_GUIDANCE;
-  GREP_GUIDANCE = constants.GREP_GUIDANCE;
 });
 
 // MCP readiness sentinel — most tests expect MCP to be ready (deny behavior).
@@ -358,14 +356,12 @@ describe("routePreToolUse", () => {
   // ─── Grep routing ──────────────────────────────────────
 
   describe("Grep tool", () => {
-    it("returns context action with GREP_GUIDANCE", () => {
+    it("passes targeted native search through without context guidance", () => {
       const result = routePreToolUse("Grep", {
         pattern: "TODO",
         path: "/some/dir",
       });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
-      expect(result!.additionalContext).toBe(GREP_GUIDANCE);
+      expect(result).toBeNull();
     });
   });
 
@@ -554,7 +550,7 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("Agent", {
         prompt: "Research this repository",
         subagent_type: "general-purpose",
-      });
+      }, undefined, "claude-code");
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       const prompt = (result!.updatedInput as Record<string, string>).prompt;

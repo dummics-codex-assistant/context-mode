@@ -18,7 +18,7 @@ export function createRoutingBlock(t, options = {}) {
   return `
 <context_window_protection>
   <priority_instructions>
-    Every byte a tool returns enters your conversation memory and costs reasoning capacity for the rest of the session. The context-mode tools let you do the work in a sandbox and surface only the derived answer — the raw bytes stay out. Think-in-Code: program the analysis, do not compute it by reading raw data into your conversation.
+    Use context-mode only when raw output is likely to be large or when substantial parsing, aggregation, or repeated retrieval is required. Keep lightweight local discovery on native tools: targeted rg/rg --files, folder and Unity-project lookup, short directory listings, a few file reads, and other bounded commands should run directly.
   </priority_instructions>
 ${toolSearchBootstrap ? `
   <deferred_tool_bootstrap>
@@ -30,18 +30,22 @@ ${toolSearchBootstrap ? `
   <tool_selection_hierarchy>
     0. MEMORY: ${t("ctx_search")}(sort: "timeline")
        - On resume or compaction, query prior decisions, errors, plans, user prompts before asking the user — auto-captured session memory is searchable.
-    1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
-       - Primary research tool. Runs commands in parallel, auto-indexes each output, and (when queries are passed) returns matching sections in the same round trip — no follow-up search call.
+    1. DIRECT: native shell/search/read tools
+       - Default for bounded local discovery and observation: targeted rg, rg --files, Get-ChildItem/dir, locating project markers, short git status/diffs, and reading a few identified files.
+    2. GATHER: ${t("ctx_batch_execute")}(commands, queries)
+       - Use for genuinely broad or multi-source research whose combined raw output would be noisy. It runs commands in parallel, auto-indexes each output, and can return matching sections in the same round trip.
        - Each command: {label: "section header", command: "shell command"}; the label becomes the FTS5 chunk title — descriptive labels improve search.
-    2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
+    3. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
        - Multiple related questions about anything already indexed (your captures + session memory). Batch every question in one array; the ranking pipeline runs per-query and the round-trip cost is paid once.
-    3. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
-       - Derive answers FROM data: filter, count, aggregate, parse, transform. Only what you console.log() enters your conversation; the raw bytes stay in the sandbox.
+    4. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
+       - Use when the input is large enough that filtering, counting, aggregation, parsing, or transformation would otherwise flood context. Only what you print enters the conversation.
   </tool_selection_hierarchy>
 
   <when_not_to_use>
-    - You intend to PROCESS the output (filter, count, parse, aggregate) → use ${t("ctx_batch_execute")} or ${t("ctx_execute")}. Bash stays correct when you intend to OBSERVE a short fixed output (git status on a clean tree, whoami, pwd) or when you are mutating state (git, mkdir, rm, mv, navigation).
-    - You want to analyze, summarize, or extract from a file → use ${t("ctx_execute_file")}. Read stays correct when you intend to Edit the file (Edit needs the exact bytes in your conversation to match against).
+    - Do not use context-mode merely because a command searches, lists, or reads. Targeted filesystem/project lookup and compact rg output belong on native tools.
+    - Do not wrap one or two lightweight commands in ${t("ctx_batch_execute")}; direct execution has lower latency and avoids indexing overhead.
+    - Small filtering or counting over already-bounded output can stay in shell. Use ${t("ctx_execute")} only when volume or repeated analysis justifies the sandbox.
+    - Read stays correct for a few small identified files and whenever you intend to edit the file.
     - WebFetch → use ${t("ctx_fetch_and_index")}; full network access, results indexed for ${t("ctx_search")}, raw page bytes never enter your conversation.
     - ${t("ctx_execute")} and ${t("ctx_execute_file")} for file writes → these run code in a subprocess and discard the sandbox FS; they are for analysis, processing, and computation only.
   </when_not_to_use>
@@ -80,15 +84,15 @@ ${includeCommands ? `
 }
 
 export function createReadGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    Reading to Edit the file? Read is correct — Edit needs the exact bytes in your conversation to match against.\n    Reading to analyze, summarize, or extract from the file? Use ' + t("ctx_execute_file") + '(path, language, code) — the bytes stay in the sandbox and only what your code prints enters your conversation.\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Native Read is correct for editing and for a few small, already-identified files. Use ' + t("ctx_execute_file") + '(path, language, code) only when the file is large and you need analysis, extraction, or aggregation without loading the raw bytes.\n  </tip>\n</context_guidance>';
 }
 
 export function createGrepGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    Grep results may be larger than you expect. When you intend to count, filter, or aggregate matches (not just spot-check one), run the search through ' + t("ctx_execute") + '(language: "javascript", code: "...") — the raw match list stays in the sandbox and only your derived answer enters your conversation. Use language: "shell" only when the code matches the host shell (PowerShell on Windows, POSIX shell on Unix).\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Targeted grep/rg and file-name searches should run directly. Use ' + t("ctx_execute") + ' only for repo-wide or high-volume result sets that require aggregation or repeated processing.\n  </tip>\n</context_guidance>';
 }
 
 export function createBashGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    When you intend to PROCESS the output (filter, count, parse, aggregate), use ' + t("ctx_batch_execute") + '(commands, queries) for multiple commands or ' + t("ctx_execute") + '(language: "javascript", code: "...") for one — the raw output stays in the sandbox and only what you print enters your conversation. Shell stays the right surface when you intend to OBSERVE a short fixed output or when you are mutating state (git, mkdir, rm, mv, navigation); if you use ' + t("ctx_execute") + '(language: "shell"), write syntax for the host shell.\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Keep bounded local searches, project/folder discovery, short listings, and compact observations in shell. Use ' + t("ctx_batch_execute") + ' or ' + t("ctx_execute") + ' only when expected raw output is large, unpredictable, or needs substantial parsing; if using language: "shell", match the host shell.\n  </tip>\n</context_guidance>';
 }
 
 export function createExternalMcpGuidance(t) {
@@ -96,7 +100,7 @@ export function createExternalMcpGuidance(t) {
 }
 
 export function createDocsScoutingGuidance(t) {
-  return `<context_guidance>\n  <tip>context-mode: broad docs/repo scouting detected. If you need to search many files, start with ${t("ctx_batch_execute")}(commands, queries) using bounded commands and descriptive labels; then use ${t("ctx_search")}(queries) for follow-up. Use normal file reads only after narrowing the shortlist.\n  </tip>\n</context_guidance>`;
+  return `<context_guidance>\n  <tip>context-mode: broad docs/repo scouting detected. Use ${t("ctx_batch_execute")}(commands, queries) only when the scan is genuinely wide or noisy. For targeted rg, project-marker lookup, folder discovery, or a small shortlist, stay on native shell/read tools.\n  </tip>\n</context_guidance>`;
 }
 
 // ── Backward compat: static exports defaulting to Codex ──

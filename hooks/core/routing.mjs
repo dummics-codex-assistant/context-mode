@@ -11,8 +11,8 @@
  */
 
 import {
-  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
-  createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
+  ROUTING_BLOCK, READ_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
+  createRoutingBlock, createReadGuidance, createBashGuidance,
   createExternalMcpGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
@@ -693,7 +693,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // Build platform-specific guidance/routing content
   const routingBlock = platform ? createRoutingBlock(t) : ROUTING_BLOCK;
   const readGuidance = platform ? createReadGuidance(t) : READ_GUIDANCE;
-  const grepGuidance = platform ? createGrepGuidance(t) : GREP_GUIDANCE;
   const bashGuidance = platform ? createBashGuidance(t) : BASH_GUIDANCE;
 
   // Normalize platform-specific tool name to canonical
@@ -866,9 +865,11 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     return guidanceOnce("read", readGuidance, sessionId);
   }
 
-  // ─── Grep: nudge toward execute (once per session) ───
+  // ─── Grep: native search is the lightweight default ───
+  // Grep/rg tools already provide bounded result surfaces in supported hosts.
+  // Do not inject context-mode merely because an operation is a search.
   if (canonical === "Grep") {
-    return guidanceOnce("grep", grepGuidance, sessionId);
+    return null;
   }
 
   // ─── WebFetch: deny + redirect to sandbox ───
